@@ -1,3 +1,5 @@
+import json
+import os
 import pandas as pd
 import yfinance as yf
 from fastapi import FastAPI
@@ -16,26 +18,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_BUNDLE_PATH = os.path.join(os.path.dirname(__file__), "tw_names.json")
+
 
 def _load_tw_names() -> dict[str, str]:
-    """Fetch Traditional Chinese company names from TWSE and TPEX at startup."""
+    """Load Traditional Chinese company names from bundled JSON, refreshed from TWSE/TPEX if reachable."""
     result: dict[str, str] = {}
+
+    # 1. Load bundled file (always works, no network needed)
+    try:
+        with open(_BUNDLE_PATH, encoding="utf-8") as f:
+            result = json.load(f)
+        print(f"Loaded {len(result)} TW company names from bundle.")
+    except Exception as e:
+        print(f"Warning: could not read {_BUNDLE_PATH}: {e}")
+
+    # 2. Try live refresh from TWSE + TPEX (fails silently on restricted networks)
     sources = [
-        "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",   # TWSE listed
-        "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", # OTC / TPEX listed
+        "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+        "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
     ]
+    live: dict[str, str] = {}
     for url in sources:
         try:
-            r = requests.get(url, timeout=10, headers={"Accept": "application/json"})
+            r = requests.get(url, timeout=8, headers={"Accept": "application/json"})
             if r.ok:
                 for item in r.json():
                     code = item.get("公司代號", "").strip()
                     name = item.get("公司簡稱", "").strip()
                     if code and name:
-                        result[code] = name
-        except Exception as e:
-            print(f"Warning: could not load names from {url}: {e}")
-    print(f"Loaded {len(result)} TW company names.")
+                        live[code] = name
+        except Exception:
+            pass
+    if live:
+        result.update(live)
+        print(f"Refreshed with {len(live)} live entries from TWSE/TPEX.")
+
     return result
 
 
