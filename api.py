@@ -158,45 +158,51 @@ async def scan_stocks(request: ScanRequest):
     for ticker in request.tickers:
         try:
             stock = yf.Ticker(ticker)
-            df = stock.history(period="60d")
-            if df.empty or len(df) < 20:
+            df = stock.history(period="120d")
+            if df.empty or len(df) < 60:
                 results.append({
                     "ticker": ticker,
                     "companyName": get_company_name(ticker),
-                    "close": None,
-                    "ma20": None,
-                    "volume": None,
-                    "vol_ma20": None,
+                    "close": None, "open": None,
+                    "ma20": None, "ma60": None,
+                    "volume": None, "vol_ma20": None,
                     "signal": "NO_DATA",
                 })
                 continue
 
             latest_close = df["Close"].iloc[-1]
-            latest_vol = df["Volume"].iloc[-1]
+            latest_open  = df["Open"].iloc[-1]
+            latest_vol   = df["Volume"].iloc[-1]
 
-            df["20MA"] = df["Close"].rolling(window=20).mean()
-            df["20VMA"] = df["Volume"].rolling(window=20).mean()
+            df["MA20"]  = df["Close"].rolling(window=20).mean()
+            df["MA60"]  = df["Close"].rolling(window=60).mean()
+            df["VMA20"] = df["Volume"].rolling(window=20).mean()
 
-            ma20 = df["20MA"].iloc[-1]
-            vma20 = df["20VMA"].iloc[-1]
+            ma20  = df["MA20"].iloc[-1]
+            ma60  = df["MA60"].iloc[-1]
+            vma20 = df["VMA20"].iloc[-1]
 
-            cond1 = latest_close > ma20
-            cond2 = latest_vol > vma20
-            is_buy = cond1 and cond2
+            cond_price  = latest_close > ma20   # price above short-term trend
+            cond_vol    = latest_vol   > vma20  # volume surge
+            cond_trend  = ma20         > ma60   # short-term trend above long-term
+            cond_candle = latest_close > latest_open  # bullish green candle
+            is_buy = cond_price and cond_vol and cond_trend and cond_candle
 
             results.append({
                 "ticker": ticker,
                 "companyName": get_company_name(ticker),
-                "close": round(float(latest_close), 2),
-                "ma20": round(float(ma20), 2),
-                "volume": int(latest_vol),
+                "close":   round(float(latest_close), 2),
+                "open":    round(float(latest_open),  2),
+                "ma20":    round(float(ma20),  2),
+                "ma60":    round(float(ma60),  2),
+                "volume":  int(latest_vol),
                 "vol_ma20": int(vma20),
                 "signal": "YES" if is_buy else "NO",
             })
 
             if is_buy:
                 triggered_alerts.append(
-                    f"🚀 {ticker} 觸發買進訊號！股價:{round(float(latest_close), 2)} > 20MA, 成交量爆發！"
+                    f"🚀 {ticker} 觸發買進訊號！股價:{round(float(latest_close), 2)} > MA20, 量能爆發, 趨勢向上, 收紅K！"
                 )
 
         except Exception as e:
@@ -204,10 +210,9 @@ async def scan_stocks(request: ScanRequest):
             results.append({
                 "ticker": ticker,
                 "companyName": get_company_name(ticker),
-                "close": None,
-                "ma20": None,
-                "volume": None,
-                "vol_ma20": None,
+                "close": None, "open": None,
+                "ma20": None, "ma60": None,
+                "volume": None, "vol_ma20": None,
                 "signal": "ERROR",
             })
 
