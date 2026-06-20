@@ -73,7 +73,7 @@ _SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 _SHEET_NAME = "gigi-war-room-watchlist"
-_SHEET_TAB = "Sheet1"
+_SHEET_TAB = "gigi-war-room-watchlist"
 _TICKER_COL = "ticker"
 
 
