@@ -149,6 +149,15 @@ async def scan_stocks(request: ScanRequest):
             stock = yf.Ticker(ticker)
             df = stock.history(period="60d")
             if df.empty or len(df) < 20:
+                results.append({
+                    "ticker": ticker,
+                    "companyName": get_company_name(ticker),
+                    "close": None,
+                    "ma20": None,
+                    "volume": None,
+                    "vol_ma20": None,
+                    "signal": "NO_DATA",
+                })
                 continue
 
             latest_close = df["Close"].iloc[-1]
@@ -181,6 +190,15 @@ async def scan_stocks(request: ScanRequest):
 
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
+            results.append({
+                "ticker": ticker,
+                "companyName": get_company_name(ticker),
+                "close": None,
+                "ma20": None,
+                "volume": None,
+                "vol_ma20": None,
+                "signal": "ERROR",
+            })
 
     if triggered_alerts and request.line_token:
         send_line_notify("\n" + "\n".join(triggered_alerts), request.line_token)
