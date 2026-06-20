@@ -155,65 +155,115 @@ async def scan_stocks(request: ScanRequest):
     results = []
     triggered_alerts = []
 
+    _NO_DATA_ROW = lambda ticker: {
+        "ticker": ticker, "companyName": get_company_name(ticker),
+        "close": None, "open": None, "high": None, "low": None,
+        "ma20": None, "ma60": None, "ma120": None,
+        "volume": None, "vol_ma20": None,
+        "rsi14": None, "bias": None,
+        "conds": {}, "signal": "NO_DATA",
+    }
+
     for ticker in request.tickers:
         try:
             stock = yf.Ticker(ticker)
-            df = stock.history(period="120d")
-            if df.empty or len(df) < 60:
-                results.append({
-                    "ticker": ticker,
-                    "companyName": get_company_name(ticker),
-                    "close": None, "open": None,
-                    "ma20": None, "ma60": None,
-                    "volume": None, "vol_ma20": None,
-                    "signal": "NO_DATA",
-                })
+            # 1 year → ~252 trading days; need 120 (MA120) + 14 (RSI warmup) + 2 (shift)
+            df = stock.history(period="1y")
+
+            if df.empty or len(df) < 136:
+                results.append(_NO_DATA_ROW(ticker))
                 continue
 
-            latest_close = df["Close"].iloc[-1]
-            latest_open  = df["Open"].iloc[-1]
-            latest_vol   = df["Volume"].iloc[-1]
+            # ── Moving averages & volume MA ───────────────────────────────────
+            df["MA20"]  = df["Close"].rolling(20).mean()
+            df["MA60"]  = df["Close"].rolling(60).mean()
+            df["MA120"] = df["Close"].rolling(120).mean()
+            df["VMA20"] = df["Volume"].rolling(20).mean()
 
-            df["MA20"]  = df["Close"].rolling(window=20).mean()
-            df["MA60"]  = df["Close"].rolling(window=60).mean()
-            df["VMA20"] = df["Volume"].rolling(window=20).mean()
+            # ── Wilder RSI-14 (EWM with alpha = 1/14) ────────────────────────
+            delta    = df["Close"].diff()
+            gain     = delta.clip(lower=0)
+            loss     = (-delta).clip(lower=0)
+            avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+            safe_loss = avg_loss.copy()
+            safe_loss[safe_loss == 0] = 1e-10          # avoid /0; near-100 RSI is correct
+            df["RSI14"] = 100.0 - (100.0 / (1.0 + avg_gain / safe_loss))
 
-            ma20  = df["MA20"].iloc[-1]
-            ma60  = df["MA60"].iloc[-1]
-            vma20 = df["VMA20"].iloc[-1]
+            # ── Bias: how far Close is above/below MA20 (decimal) ────────────
+            df["Bias"] = (df["Close"] - df["MA20"]) / df["MA20"]
 
-            cond_price  = latest_close > ma20   # price above short-term trend
-            cond_vol    = latest_vol   > vma20  # volume surge
-            cond_trend  = ma20         > ma60   # short-term trend above long-term
-            cond_candle = latest_close > latest_open  # bullish green candle
-            is_buy = cond_price and cond_vol and cond_trend and cond_candle
+            # ── Extract latest + previous bar ─────────────────────────────────
+            last     = df.iloc[-1]
+            prev_rsi = df["RSI14"].iloc[-2]
+
+            c_close  = last["Close"]
+            c_open   = last["Open"]
+            c_high   = last["High"]
+            c_low    = last["Low"]
+            c_vol    = last["Volume"]
+            ma20     = last["MA20"]
+            ma60     = last["MA60"]
+            ma120    = last["MA120"]
+            vol_ma20 = last["VMA20"]
+            rsi14    = last["RSI14"]
+            bias     = last["Bias"]
+
+            # ── Strict NaN guard — any missing indicator → NO_DATA ────────────
+            if any(pd.isna(v) for v in [ma20, ma60, ma120, vol_ma20, rsi14, bias, prev_rsi]):
+                row = _NO_DATA_ROW(ticker)
+                if not pd.isna(c_close):
+                    row["close"]  = round(float(c_close), 2)
+                if not pd.isna(c_vol):
+                    row["volume"] = int(c_vol)
+                results.append(row)
+                continue
+
+            # ── Six conditions ────────────────────────────────────────────────
+            mid_range = (c_high + c_low) / 2.0
+            conds = {
+                "price":  bool(c_close > ma20),
+                "volume": bool(c_vol > 1.2 * vol_ma20),
+                "trend":  bool(ma20 > ma60 and ma60 > ma120),
+                "candle": bool(c_close > c_open and c_close > mid_range),
+                "rsi":    bool(60.0 < rsi14 < 70.0 and rsi14 > prev_rsi),
+                "bias":   bool(bias < 0.03),
+            }
+            is_buy = all(conds.values())
 
             results.append({
-                "ticker": ticker,
+                "ticker":      ticker,
                 "companyName": get_company_name(ticker),
-                "close":   round(float(latest_close), 2),
-                "open":    round(float(latest_open),  2),
-                "ma20":    round(float(ma20),  2),
-                "ma60":    round(float(ma60),  2),
-                "volume":  int(latest_vol),
-                "vol_ma20": int(vma20),
-                "signal": "YES" if is_buy else "NO",
+                "close":    round(float(c_close),  2),
+                "open":     round(float(c_open),   2),
+                "high":     round(float(c_high),   2),
+                "low":      round(float(c_low),    2),
+                "ma20":     round(float(ma20),     2),
+                "ma60":     round(float(ma60),     2),
+                "ma120":    round(float(ma120),    2),
+                "volume":   int(c_vol),
+                "vol_ma20": int(vol_ma20),
+                "rsi14":    round(float(rsi14),    1),
+                "bias":     round(float(bias) * 100, 2),  # stored as % for display
+                "conds":    conds,
+                "signal":   "YES" if is_buy else "NO",
             })
 
             if is_buy:
                 triggered_alerts.append(
-                    f"🚀 {ticker} 觸發買進訊號！股價:{round(float(latest_close), 2)} > MA20, 量能爆發, 趨勢向上, 收紅K！"
+                    f"🚀 {ticker} 高品質買進訊號！"
+                    f"Close:{round(float(c_close),2)} RSI:{round(float(rsi14),1)} Bias:{round(float(bias)*100,2)}%"
                 )
 
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
             results.append({
-                "ticker": ticker,
-                "companyName": get_company_name(ticker),
-                "close": None, "open": None,
-                "ma20": None, "ma60": None,
+                "ticker": ticker, "companyName": get_company_name(ticker),
+                "close": None, "open": None, "high": None, "low": None,
+                "ma20": None, "ma60": None, "ma120": None,
                 "volume": None, "vol_ma20": None,
-                "signal": "ERROR",
+                "rsi14": None, "bias": None,
+                "conds": {}, "signal": "ERROR",
             })
 
     if triggered_alerts and request.line_token:
