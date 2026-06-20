@@ -73,12 +73,17 @@ _SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 _SHEET_NAME = "gigi-war-room-watchlist"
-_SHEET_TAB = "gigi-war-room-watchlist"
 _TICKER_COL = "ticker"
 
+# Each market maps to its own worksheet tab; the US tab is auto-created on first use.
+_SHEET_TABS = {
+    "tw": "gigi-war-room-watchlist",
+    "us": "gigi-us-watchlist",
+}
 
-def _get_sheet():
-    """Return the first worksheet of the watchlist Google Sheet."""
+
+def _get_sheet_tab(market: str = "tw"):
+    """Return the worksheet for the given market, auto-creating the tab if needed."""
     raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if not raw:
         raise HTTPException(status_code=503, detail="GOOGLE_CREDENTIALS_JSON not configured")
@@ -86,14 +91,20 @@ def _get_sheet():
     creds = Credentials.from_service_account_info(creds_dict, scopes=_SHEETS_SCOPES)
     gc = gspread.authorize(creds)
     sh = gc.open(_SHEET_NAME)
-    return sh.worksheet(_SHEET_TAB)
+    tab_name = _SHEET_TABS.get(market, _SHEET_TABS["tw"])
+    try:
+        return sh.worksheet(tab_name)
+    except Exception:
+        ws = sh.add_worksheet(title=tab_name, rows=200, cols=1)
+        ws.update("A1", [[_TICKER_COL]])
+        return ws
 
 
 @app.get("/api/watchlist")
-async def get_watchlist():
-    """Return the ticker list from the Google Sheet."""
+async def get_watchlist(market: str = "tw"):
+    """Return the ticker list for the given market from Google Sheets."""
     try:
-        ws = _get_sheet()
+        ws = _get_sheet_tab(market)
         records = ws.get_all_records()
         tickers = [r[_TICKER_COL] for r in records if r.get(_TICKER_COL, "").strip()]
         return {"tickers": tickers}
@@ -108,10 +119,10 @@ class WatchlistUpdate(BaseModel):
 
 
 @app.put("/api/watchlist")
-async def put_watchlist(body: WatchlistUpdate):
-    """Replace the ticker list in the Google Sheet."""
+async def put_watchlist(body: WatchlistUpdate, market: str = "tw"):
+    """Replace the ticker list for the given market in Google Sheets."""
     try:
-        ws = _get_sheet()
+        ws = _get_sheet_tab(market)
         ws.clear()
         ws.update("A1", [[_TICKER_COL]] + [[t] for t in body.tickers])
     except HTTPException:
