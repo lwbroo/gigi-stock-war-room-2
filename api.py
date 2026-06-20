@@ -2,11 +2,13 @@ import json
 import os
 import pandas as pd
 import yfinance as yf
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import requests
+import gspread
+from google.oauth2.service_account import Credentials
 
 app = FastAPI()
 
@@ -64,6 +66,49 @@ def get_company_name(ticker: str) -> str:
     """Return Traditional Chinese name for a TW ticker, or the ticker itself."""
     code = ticker.split(".")[0]
     return _TW_NAME_MAP.get(code, ticker)
+
+
+_SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+_SHEET_NAME = "gigi-war-room-watchlist"
+_SHEET_TAB = "Sheet1"
+_TICKER_COL = "ticker"
+
+
+def _get_sheet():
+    """Return the first worksheet of the watchlist Google Sheet."""
+    raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if not raw:
+        raise HTTPException(status_code=503, detail="GOOGLE_CREDENTIALS_JSON not configured")
+    creds_dict = json.loads(raw)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=_SHEETS_SCOPES)
+    gc = gspread.authorize(creds)
+    sh = gc.open(_SHEET_NAME)
+    return sh.worksheet(_SHEET_TAB)
+
+
+@app.get("/api/watchlist")
+async def get_watchlist():
+    """Return the ticker list from the Google Sheet."""
+    ws = _get_sheet()
+    records = ws.get_all_records()
+    tickers = [r[_TICKER_COL] for r in records if r.get(_TICKER_COL, "").strip()]
+    return {"tickers": tickers}
+
+
+class WatchlistUpdate(BaseModel):
+    tickers: List[str]
+
+
+@app.put("/api/watchlist")
+async def put_watchlist(body: WatchlistUpdate):
+    """Replace the ticker list in the Google Sheet."""
+    ws = _get_sheet()
+    ws.clear()
+    ws.update("A1", [[_TICKER_COL]] + [[t] for t in body.tickers])
+    return {"status": "ok", "count": len(body.tickers)}
 
 
 class ScanRequest(BaseModel):
