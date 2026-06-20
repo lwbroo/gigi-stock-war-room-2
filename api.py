@@ -92,10 +92,15 @@ def _get_sheet():
 @app.get("/api/watchlist")
 async def get_watchlist():
     """Return the ticker list from the Google Sheet."""
-    ws = _get_sheet()
-    records = ws.get_all_records()
-    tickers = [r[_TICKER_COL] for r in records if r.get(_TICKER_COL, "").strip()]
-    return {"tickers": tickers}
+    try:
+        ws = _get_sheet()
+        records = ws.get_all_records()
+        tickers = [r[_TICKER_COL] for r in records if r.get(_TICKER_COL, "").strip()]
+        return {"tickers": tickers}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 class WatchlistUpdate(BaseModel):
@@ -105,9 +110,14 @@ class WatchlistUpdate(BaseModel):
 @app.put("/api/watchlist")
 async def put_watchlist(body: WatchlistUpdate):
     """Replace the ticker list in the Google Sheet."""
-    ws = _get_sheet()
-    ws.clear()
-    ws.update("A1", [[_TICKER_COL]] + [[t] for t in body.tickers])
+    try:
+        ws = _get_sheet()
+        ws.clear()
+        ws.update("A1", [[_TICKER_COL]] + [[t] for t in body.tickers])
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
     return {"status": "ok", "count": len(body.tickers)}
 
 
