@@ -161,7 +161,7 @@ async def scan_stocks(request: ScanRequest):
         "ma20": None, "ma60": None, "ma120": None,
         "volume": None, "vol_ma20": None,
         "rsi14": None, "bias": None,
-        "conds": {}, "signal": "NO_DATA",
+        "conds": {}, "sell_flags": {}, "signal": "NO_DATA",
     }
 
     for ticker in request.tickers:
@@ -229,6 +229,11 @@ async def scan_stocks(request: ScanRequest):
                 "rsi":    bool(60.0 < rsi14 < 70.0 and rsi14 > prev_rsi),
                 "bias":   bool(bias < 0.03),
             }
+            sell_flags = {
+                "is_trend_broken":        bool(c_close < ma20),
+                "is_momentum_lost":       bool(rsi14 < 50.0),
+                "is_heavy_distribution":  bool(c_close < c_open and c_vol > vol_ma20),
+            }
             is_buy = all(conds.values())
 
             results.append({
@@ -245,7 +250,8 @@ async def scan_stocks(request: ScanRequest):
                 "vol_ma20": int(vol_ma20),
                 "rsi14":    round(float(rsi14),    1),
                 "bias":     round(float(bias) * 100, 2),  # stored as % for display
-                "conds":    conds,
+                "conds":      conds,
+                "sell_flags": sell_flags,
                 "signal":   "YES" if is_buy else "NO",
             })
 
@@ -263,7 +269,7 @@ async def scan_stocks(request: ScanRequest):
                 "ma20": None, "ma60": None, "ma120": None,
                 "volume": None, "vol_ma20": None,
                 "rsi14": None, "bias": None,
-                "conds": {}, "signal": "ERROR",
+                "conds": {}, "sell_flags": {}, "signal": "ERROR",
             })
 
     if triggered_alerts and request.line_token:
