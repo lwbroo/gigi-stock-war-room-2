@@ -36,18 +36,19 @@ def _load_tw_names() -> dict[str, str]:
         print(f"Warning: could not read {_BUNDLE_PATH}: {e}")
 
     # 2. Try live refresh from TWSE + TPEX (fails silently on restricted networks)
+    # TWSE and TPEX use different field names for the same data
     sources = [
-        "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
-        "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+        ("https://openapi.twse.com.tw/v1/opendata/t187ap03_L",    "公司代號",            "公司簡稱"),
+        ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", "SecuritiesCompanyCode", "CompanyAbbreviation"),
     ]
     live: dict[str, str] = {}
-    for url in sources:
+    for url, code_field, name_field in sources:
         try:
             r = requests.get(url, timeout=8, headers={"Accept": "application/json"})
             if r.ok:
                 for item in r.json():
-                    code = item.get("公司代號", "").strip()
-                    name = item.get("公司簡稱", "").strip()
+                    code = item.get(code_field, "").strip()
+                    name = item.get(name_field, "").strip()
                     if code and name:
                         live[code] = name
         except Exception:
