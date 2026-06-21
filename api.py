@@ -170,8 +170,19 @@ async def scan_stocks(request: ScanRequest):
             # 1 year → ~252 trading days; need 120 (MA120) + 14 (RSI warmup) + 2 (shift)
             df = stock.history(period="1y")
 
+            # Resolve company name: map first, yfinance info as fallback
+            company_name = get_company_name(ticker)
+            if company_name == ticker:
+                try:
+                    info = stock.info
+                    company_name = info.get("shortName") or info.get("longName") or ticker
+                except Exception:
+                    pass
+
             if df.empty or len(df) < 136:
-                results.append(_NO_DATA_ROW(ticker))
+                row = _NO_DATA_ROW(ticker)
+                row["companyName"] = company_name
+                results.append(row)
                 continue
 
             # ── Moving averages & volume MA ───────────────────────────────────
@@ -238,7 +249,7 @@ async def scan_stocks(request: ScanRequest):
 
             results.append({
                 "ticker":      ticker,
-                "companyName": get_company_name(ticker),
+                "companyName": company_name,
                 "close":    round(float(c_close),  2),
                 "open":     round(float(c_open),   2),
                 "high":     round(float(c_high),   2),
@@ -264,7 +275,7 @@ async def scan_stocks(request: ScanRequest):
         except Exception as e:
             print(f"Error scanning {ticker}: {e}")
             results.append({
-                "ticker": ticker, "companyName": get_company_name(ticker),
+                "ticker": ticker, "companyName": get_company_name(ticker),  # best-effort; company_name may not be set
                 "close": None, "open": None, "high": None, "low": None,
                 "ma20": None, "ma60": None, "ma120": None,
                 "volume": None, "vol_ma20": None,
