@@ -25,8 +25,8 @@ app.add_middleware(
 _BUNDLE_PATH = os.path.join(os.path.dirname(__file__), "tw_names.json")
 
 
-def _load_tw_names() -> dict[str, str]:
-    result: dict[str, str] = {}
+def _load_tw_names() -> dict:
+    result = {}
     try:
         with open(_BUNDLE_PATH, encoding="utf-8") as f:
             result = json.load(f)
@@ -63,7 +63,7 @@ _INDEX_CACHE: dict = {}   # market -> (df, timestamp)
 _INST_CACHE:  dict = {}   # {data: {code: {...}}, ts: float, date: str}
 
 
-def _get_index_df(market: str) -> pd.DataFrame | None:
+def _get_index_df(market: str) -> Optional[pd.DataFrame]:
     ticker = "^TWII" if market == "tw" else "^GSPC"
     cached = _INDEX_CACHE.get(market)
     if cached and time.time() - cached[1] < 600:
