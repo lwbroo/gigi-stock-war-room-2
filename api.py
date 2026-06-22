@@ -4,6 +4,7 @@ import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -24,13 +25,42 @@ app.add_middleware(
 
 _BUNDLE_PATH = os.path.join(os.path.dirname(__file__), "tw_names.json")
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+_SHEET_NAME     = "gigi-war-room-watchlist"
+_SHEET_TABS     = {"tw": "gigi-war-room-watchlist", "us": "gigi-us-watchlist"}
+_TICKER_COL     = "ticker"
+_SHEETS_SCOPES  = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+SCAN_LOG_TAB   = "scan_log"
+REG_COEFFS_TAB = "regression_coeffs"
+
+FEATURE_NAMES = [
+    "macd_num", "adx_norm", "obv_num", "monthly_num",
+    "breakout20", "vol_exp", "inst_fgn_k", "inst_tst_k",
+    "rs_clip", "weekly_num", "rsi_norm", "bias_pct",
+]
+
+SCAN_LOG_HEADERS = [
+    "scan_date", "ticker", "close",
+    "macd_cross", "adx14", "obv_trend", "monthly_trend",
+    "is_breakout20", "vol_expansion", "inst_foreign", "inst_trust",
+    "rs_score", "weekly_trend", "rsi14", "bias",
+]
+
+# ── Caches ────────────────────────────────────────────────────────────────────
+_INDEX_CACHE: dict = {}
+_INST_CACHE:  dict = {}
+
 
 def _load_tw_names() -> dict:
     result = {}
     try:
         with open(_BUNDLE_PATH, encoding="utf-8") as f:
             result = json.load(f)
-        print(f"Loaded {len(result)} TW company names from bundle.")
+        print(f"Loaded {len(result)} TW names from bundle.")
     except Exception as e:
         print(f"Warning: could not read {_BUNDLE_PATH}: {e}")
 
@@ -38,7 +68,7 @@ def _load_tw_names() -> dict:
         ("https://openapi.twse.com.tw/v1/opendata/t187ap03_L",    "公司代號",             "公司簡稱"),
         ("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O", "SecuritiesCompanyCode", "CompanyAbbreviation"),
     ]
-    live: dict[str, str] = {}
+    live: dict = {}
     for url, code_field, name_field in sources:
         try:
             r = requests.get(url, timeout=8, headers={"Accept": "application/json"})
@@ -52,15 +82,16 @@ def _load_tw_names() -> dict:
             pass
     if live:
         result.update(live)
-        print(f"Refreshed with {len(live)} live entries from TWSE/TPEX.")
+        print(f"Refreshed {len(live)} live names.")
     return result
 
 
 _TW_NAME_MAP = _load_tw_names()
 
-# ── Cache: market index & institutional data ──────────────────────────────────
-_INDEX_CACHE: dict = {}   # market -> (df, timestamp)
-_INST_CACHE:  dict = {}   # {data: {code: {...}}, ts: float, date: str}
+
+def get_company_name(ticker: str) -> str:
+    code = ticker.split(".")[0]
+    return _TW_NAME_MAP.get(code, ticker)
 
 
 def _get_index_df(market: str) -> Optional[pd.DataFrame]:
@@ -79,8 +110,6 @@ def _get_index_df(market: str) -> Optional[pd.DataFrame]:
 
 
 def _load_inst_data() -> dict:
-    """Fetch TWSE 3-institution daily buy/sell data. Cached 1 hr."""
-    from datetime import datetime, timedelta
     now_ts = time.time()
     if _INST_CACHE.get("data") and now_ts - _INST_CACHE.get("ts", 0) < 3600:
         return _INST_CACHE["data"]
@@ -91,13 +120,10 @@ def _load_inst_data() -> dict:
             continue
         date_str = d.strftime("%Y%m%d")
         try:
-            url = (
-                f"https://www.twse.com.tw/rwd/zh/fund/T86"
-                f"?response=json&date={date_str}&selectType=ALL"
-            )
+            url = (f"https://www.twse.com.tw/rwd/zh/fund/T86"
+                   f"?response=json&date={date_str}&selectType=ALL")
             r = requests.get(url, timeout=12, headers={
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json", "User-Agent": "Mozilla/5.0",
             })
             if not r.ok:
                 continue
@@ -105,7 +131,6 @@ def _load_inst_data() -> dict:
             if payload.get("stat") != "OK" or not payload.get("data"):
                 continue
 
-            # Detect field indices from 'fields' array if available
             fields = payload.get("fields", [])
             def _find(keywords, exclude=""):
                 for i, f in enumerate(fields):
@@ -143,14 +168,157 @@ def _load_inst_data() -> dict:
                 return result
         except Exception as e:
             print(f"TWSE inst fetch failed ({date_str}): {e}")
-
     return {}
 
 
-def get_company_name(ticker: str) -> str:
-    code = ticker.split(".")[0]
-    return _TW_NAME_MAP.get(code, ticker)
+# ── Sheets helpers ─────────────────────────────────────────────────────────────
 
+def _get_gc():
+    raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if not raw:
+        raise HTTPException(status_code=503, detail="GOOGLE_CREDENTIALS_JSON not configured")
+    creds = Credentials.from_service_account_info(json.loads(raw), scopes=_SHEETS_SCOPES)
+    return gspread.authorize(creds)
+
+
+def _get_sheet_tab(market: str = "tw"):
+    gc = _get_gc()
+    sh = gc.open(_SHEET_NAME)
+    tab_name = _SHEET_TABS.get(market, _SHEET_TABS["tw"])
+    try:
+        return sh.worksheet(tab_name)
+    except Exception:
+        ws = sh.add_worksheet(title=tab_name, rows=200, cols=1)
+        ws.update("A1", [[_TICKER_COL]])
+        return ws
+
+
+def _get_or_create_tab(tab_name: str, headers: list):
+    try:
+        raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+        if not raw:
+            return None
+        creds = Credentials.from_service_account_info(json.loads(raw), scopes=_SHEETS_SCOPES)
+        gc = gspread.authorize(creds)
+        sh = gc.open(_SHEET_NAME)
+        try:
+            ws = sh.worksheet(tab_name)
+        except Exception:
+            ws = sh.add_worksheet(title=tab_name, rows=5000, cols=len(headers))
+            ws.update("A1", [headers])
+        return ws
+    except Exception as e:
+        print(f"_get_or_create_tab({tab_name}) error: {e}")
+        return None
+
+
+# ── Regression helpers ─────────────────────────────────────────────────────────
+
+def _row_to_features(r: dict) -> list:
+    """Convert scan result or scan_log record to regression feature vector (must match frontend)."""
+    macd_map = {"golden": 2.0, "above": 1.0, "none": 0.0, "below": -1.0, "death": -2.0}
+
+    def _bool_val(v, true_vals=("True", "true", "1", True, 1)):
+        return 1.0 if v in true_vals else (-1.0 if v in ("False", "false", "0", False, 0, "None", None, "") and v not in (None, "") else 0.0)
+
+    monthly = r.get("monthly_trend")
+    weekly  = r.get("weekly_trend")
+
+    return [
+        macd_map.get(str(r.get("macd_cross") or "none"), 0.0),
+        min(float(r.get("adx14") or 25), 50.0) / 50.0,
+        1.0 if str(r.get("obv_trend")) == "rising" else (-1.0 if str(r.get("obv_trend")) == "falling" else 0.0),
+        1.0 if monthly in (True, "True", "true", "1") else (-1.0 if monthly in (False, "False", "false", "0") else 0.0),
+        1.0 if str(r.get("is_breakout20")) in ("True", "true", "1") or r.get("is_breakout20") is True else 0.0,
+        1.0 if str(r.get("vol_expansion")) in ("True", "true", "1") or r.get("vol_expansion") is True else 0.0,
+        max(-10.0, min(10.0, float(r.get("inst_foreign") or 0) / 1000.0)),
+        max(-5.0,  min(5.0,  float(r.get("inst_trust")   or 0) / 1000.0)),
+        max(-3.0,  min(3.0,  float(r.get("rs_score")     or 0))),
+        1.0 if weekly in (True, "True", "true", "1") else (-1.0 if weekly in (False, "False", "false", "0") else 0.0),
+        (float(r.get("rsi14") or 50) - 50.0) / 50.0,
+        float(r.get("bias") or 0),
+    ]
+
+
+def _append_scan_log(results: list, market: str):
+    if market != "tw":
+        return
+    try:
+        ws = _get_or_create_tab(SCAN_LOG_TAB, SCAN_LOG_HEADERS)
+        if not ws:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        rows = []
+        for r in results:
+            if r.get("signal") in ("NO_DATA", "ERROR") or r.get("close") is None:
+                continue
+            rows.append([
+                today, r["ticker"], r.get("close", ""),
+                r.get("macd_cross", ""),
+                r.get("adx14", ""),
+                r.get("obv_trend", ""),
+                str(r.get("monthly_trend", "")),
+                str(r.get("is_breakout20", "")),
+                str(r.get("vol_expansion", "")),
+                r.get("inst_foreign", ""),
+                r.get("inst_trust", ""),
+                r.get("rs_score", ""),
+                str(r.get("weekly_trend", "")),
+                r.get("rsi14", ""),
+                r.get("bias", ""),
+            ])
+        if rows:
+            ws.append_rows(rows, value_input_option="RAW")
+            print(f"Logged {len(rows)} rows to scan_log ({today})")
+    except Exception as e:
+        print(f"scan_log append error: {e}")
+
+
+def _load_reg_coeffs() -> Optional[dict]:
+    """Load regression coefficients from Sheets (returns None if not trained yet)."""
+    try:
+        ws = _get_or_create_tab(REG_COEFFS_TAB, ["feature", "value"])
+        if not ws:
+            return None
+        records = ws.get_all_records()
+        if not records:
+            return None
+        meta, coeffs = {}, {}
+        for rec in records:
+            feat = str(rec.get("feature", ""))
+            val  = str(rec.get("value", ""))
+            if feat.startswith("_"):
+                meta[feat[1:]] = val
+            elif feat:
+                try:
+                    coeffs[feat] = float(val)
+                except Exception:
+                    pass
+        if not coeffs:
+            return None
+        return {
+            "intercept":  float(meta.get("intercept", 0)),
+            "r2":         float(meta.get("r2", 0)),
+            "n_samples":  int(float(meta.get("n", 0))),
+            "updated":    meta.get("updated", ""),
+            "coefficients": [coeffs.get(name, 0.0) for name in FEATURE_NAMES],
+        }
+    except Exception:
+        return None
+
+
+def _apply_reg_coeffs(row: dict, reg: dict) -> Optional[float]:
+    if not reg:
+        return None
+    try:
+        features = _row_to_features(row)
+        pred = reg["intercept"] + sum(f * c for f, c in zip(features, reg["coefficients"]))
+        return round(pred * 100, 2)  # as percentage
+    except Exception:
+        return None
+
+
+# ── Candlestick patterns ───────────────────────────────────────────────────────
 
 def _detect_pattern(df: pd.DataFrame) -> str:
     if len(df) < 3:
@@ -180,31 +348,7 @@ def _detect_pattern(df: pd.DataFrame) -> str:
     return ""
 
 
-_SHEETS_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
-_SHEET_NAME = "gigi-war-room-watchlist"
-_TICKER_COL = "ticker"
-_SHEET_TABS = {"tw": "gigi-war-room-watchlist", "us": "gigi-us-watchlist"}
-
-
-def _get_sheet_tab(market: str = "tw"):
-    raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    if not raw:
-        raise HTTPException(status_code=503, detail="GOOGLE_CREDENTIALS_JSON not configured")
-    creds_dict = json.loads(raw)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=_SHEETS_SCOPES)
-    gc = gspread.authorize(creds)
-    sh = gc.open(_SHEET_NAME)
-    tab_name = _SHEET_TABS.get(market, _SHEET_TABS["tw"])
-    try:
-        return sh.worksheet(tab_name)
-    except Exception:
-        ws = sh.add_worksheet(title=tab_name, rows=200, cols=1)
-        ws.update("A1", [[_TICKER_COL]])
-        return ws
-
+# ── Watchlist endpoints ────────────────────────────────────────────────────────
 
 @app.get("/api/watchlist")
 async def get_watchlist(market: str = "tw"):
@@ -236,6 +380,8 @@ async def put_watchlist(body: WatchlistUpdate, market: str = "tw"):
     return {"status": "ok", "count": len(body.tickers)}
 
 
+# ── Scan endpoint ──────────────────────────────────────────────────────────────
+
 class ScanRequest(BaseModel):
     tickers: List[str]
     market: str = "tw"
@@ -260,44 +406,46 @@ async def scan_stocks(request: ScanRequest):
     results = []
     triggered_alerts = []
 
-    # Market index for RS calculation
     index_df = _get_index_df(request.market)
     index_20d_return = None
     if index_df is not None and len(index_df) >= 21:
         idx_c = index_df["Close"]
         index_20d_return = float((idx_c.iloc[-1] - idx_c.iloc[-21]) / idx_c.iloc[-21])
 
-    # Market regime: is index above its own MA20?
     market_regime_bull = None
     if index_df is not None and len(index_df) >= 20:
         idx_ma20 = index_df["Close"].rolling(20).mean().iloc[-1]
         market_regime_bull = bool(index_df["Close"].iloc[-1] > idx_ma20)
 
-    # Institutional data (TW only)
     inst_data = _load_inst_data() if request.market == "tw" else {}
 
-    _NO_DATA_ROW = lambda ticker: {
-        "ticker": ticker, "companyName": get_company_name(ticker),
-        "close": None, "open": None, "high": None, "low": None,
-        "ma20": None, "ma60": None, "ma120": None,
-        "volume": None, "vol_ma20": None,
-        "rsi14": None, "bias": None,
-        # v3 fields
-        "week52_high": None, "week52_low": None, "pct_from_52high": None,
-        "rs_score": None, "weekly_trend": None,
-        "max_drawdown_1y": None, "stop_loss": None, "target_price": None,
-        "pattern": "",
-        # v4 fields
-        "macd_line": None, "macd_signal": None, "macd_hist": None, "macd_cross": None,
-        "adx14": None, "di_plus": None, "di_minus": None,
-        "obv_trend": None,
-        "monthly_trend": None,
-        "is_breakout20": None,
-        "vol_expansion": None,
-        "inst_foreign": None, "inst_trust": None,
-        "market_regime_bull": market_regime_bull,
-        "conds": {}, "sell_flags": {}, "signal": "NO_DATA",
-    }
+    # Load regression coefficients (best-effort)
+    reg_coeffs = None
+    try:
+        reg_coeffs = _load_reg_coeffs()
+    except Exception:
+        pass
+
+    def _no_data_row(ticker):
+        return {
+            "ticker": ticker, "companyName": get_company_name(ticker),
+            "close": None, "open": None, "high": None, "low": None,
+            "ma20": None, "ma60": None, "ma120": None,
+            "volume": None, "vol_ma20": None,
+            "rsi14": None, "bias": None,
+            "week52_high": None, "week52_low": None, "pct_from_52high": None,
+            "rs_score": None, "weekly_trend": None,
+            "max_drawdown_1y": None, "stop_loss": None, "target_price": None,
+            "pattern": "",
+            "macd_line": None, "macd_signal": None, "macd_hist": None, "macd_cross": None,
+            "adx14": None, "di_plus": None, "di_minus": None,
+            "obv_trend": None, "monthly_trend": None,
+            "is_breakout20": None, "vol_expansion": None,
+            "inst_foreign": None, "inst_trust": None,
+            "market_regime_bull": market_regime_bull,
+            "predicted_return": None,
+            "conds": {}, "sell_flags": {}, "signal": "NO_DATA",
+        }
 
     for ticker in request.tickers:
         try:
@@ -313,12 +461,12 @@ async def scan_stocks(request: ScanRequest):
                     pass
 
             if df.empty or len(df) < 136:
-                row = _NO_DATA_ROW(ticker)
+                row = _no_data_row(ticker)
                 row["companyName"] = company_name
                 results.append(row)
                 continue
 
-            # ── Moving averages & volume MA ───────────────────────────────────
+            # ── Moving averages ───────────────────────────────────────────────
             df["MA20"]  = df["Close"].rolling(20).mean()
             df["MA60"]  = df["Close"].rolling(60).mean()
             df["MA120"] = df["Close"].rolling(120).mean()
@@ -339,21 +487,19 @@ async def scan_stocks(request: ScanRequest):
             # ── MACD (12/26/9) ────────────────────────────────────────────────
             exp12 = df["Close"].ewm(span=12, adjust=False).mean()
             exp26 = df["Close"].ewm(span=26, adjust=False).mean()
-            df["MACD"]       = exp12 - exp26
-            df["MACD_Sig"]   = df["MACD"].ewm(span=9, adjust=False).mean()
-            df["MACD_Hist"]  = df["MACD"] - df["MACD_Sig"]
+            df["MACD"]      = exp12 - exp26
+            df["MACD_Sig"]  = df["MACD"].ewm(span=9, adjust=False).mean()
+            df["MACD_Hist"] = df["MACD"] - df["MACD_Sig"]
 
             # ── ADX-14 ────────────────────────────────────────────────────────
             df["H-L"]  = df["High"] - df["Low"]
             df["H-PC"] = (df["High"] - df["Close"].shift(1)).abs()
             df["L-PC"] = (df["Low"]  - df["Close"].shift(1)).abs()
             df["TR"]   = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
-
             hl_diff  = df["High"] - df["High"].shift(1)
             lh_diff  = df["Low"].shift(1) - df["Low"]
             df["DM+"] = np.where((hl_diff > lh_diff) & (hl_diff > 0), hl_diff, 0.0)
             df["DM-"] = np.where((lh_diff > hl_diff) & (lh_diff > 0), lh_diff, 0.0)
-
             atr    = df["TR"].ewm(alpha=1/14, min_periods=14, adjust=False).mean()
             di_pos = 100 * df["DM+"].ewm(alpha=1/14, min_periods=14, adjust=False).mean() / atr.replace(0, np.nan)
             di_neg = 100 * df["DM-"].ewm(alpha=1/14, min_periods=14, adjust=False).mean() / atr.replace(0, np.nan)
@@ -371,7 +517,7 @@ async def scan_stocks(request: ScanRequest):
             week52_high = float(df["High"].max())
             week52_low  = float(df["Low"].min())
 
-            # ── Max drawdown (1y) ─────────────────────────────────────────────
+            # ── Max drawdown ──────────────────────────────────────────────────
             rolling_max     = df["Close"].cummax()
             max_drawdown_1y = float(((df["Close"] - rolling_max) / rolling_max).min())
 
@@ -392,7 +538,7 @@ async def scan_stocks(request: ScanRequest):
             if len(monthly) >= 10 and not any(pd.isna([mma5.iloc[-1], mma10.iloc[-1]])):
                 monthly_trend = bool(mma5.iloc[-1] > mma10.iloc[-1])
 
-            # ── Extract latest bars ───────────────────────────────────────────
+            # ── Latest bar values ─────────────────────────────────────────────
             last     = df.iloc[-1]
             prev     = df.iloc[-2]
             prev_rsi = df["RSI14"].iloc[-2]
@@ -410,13 +556,14 @@ async def scan_stocks(request: ScanRequest):
             bias     = last["Bias"]
 
             if any(pd.isna(v) for v in [ma20, ma60, ma120, vol_ma20, rsi14, bias, prev_rsi]):
-                row = _NO_DATA_ROW(ticker)
+                row = _no_data_row(ticker)
                 row["companyName"] = company_name
-                if not pd.isna(c_close): row["close"] = round(float(c_close), 2)
+                if not pd.isna(c_close):
+                    row["close"] = round(float(c_close), 2)
                 results.append(row)
                 continue
 
-            # ── MACD cross status ─────────────────────────────────────────────
+            # ── MACD cross ───────────────────────────────────────────────────
             macd_now  = last["MACD"]
             macd_prev = prev["MACD"]
             sig_now   = last["MACD_Sig"]
@@ -432,29 +579,28 @@ async def scan_stocks(request: ScanRequest):
                 else:
                     macd_cross = "below"
 
-            # ── ADX values ───────────────────────────────────────────────────
-            adx14  = None if pd.isna(last["ADX"]) else round(float(last["ADX"]), 1)
-            di_plus_val  = None if pd.isna(last["DI+"]) else round(float(last["DI+"]), 1)
-            di_minus_val = None if pd.isna(last["DI-"]) else round(float(last["DI-"]), 1)
+            # ── ADX ──────────────────────────────────────────────────────────
+            adx14       = None if pd.isna(last["ADX"]) else round(float(last["ADX"]), 1)
+            di_plus_val = None if pd.isna(last["DI+"]) else round(float(last["DI+"]), 1)
+            di_minus_val= None if pd.isna(last["DI-"]) else round(float(last["DI-"]), 1)
 
             # ── OBV trend ────────────────────────────────────────────────────
             obv_trend = None
             if not pd.isna(last["OBV"]) and not pd.isna(last["OBV_MA"]):
                 obv_trend = "rising" if last["OBV"] > last["OBV_MA"] else "falling"
 
-            # ── Breakout: close above 20-day high (excluding today) ───────────
+            # ── Breakout & volume expansion ───────────────────────────────────
             is_breakout20 = False
             if len(df) >= 21:
                 high20 = df["High"].iloc[-21:-1].max()
                 is_breakout20 = bool(float(c_close) > float(high20))
 
-            # ── Volume expansion (3-day rising volume, above VMA20) ───────────
             vol_expansion = False
             if len(df) >= 3:
                 v1, v2, v3 = df["Volume"].iloc[-3], df["Volume"].iloc[-2], df["Volume"].iloc[-1]
                 vol_expansion = bool(v3 > v2 > v1 and v3 > vol_ma20)
 
-            # ── RS (relative strength vs index) ──────────────────────────────
+            # ── RS ────────────────────────────────────────────────────────────
             rs_score = None
             if len(df) >= 21:
                 stock_20d = float((c_close - df["Close"].iloc[-21]) / df["Close"].iloc[-21])
@@ -467,7 +613,7 @@ async def scan_stocks(request: ScanRequest):
             inst_foreign = inst.get("foreign") if inst else None
             inst_trust   = inst.get("trust")   if inst else None
 
-            # ── Six buy conditions ────────────────────────────────────────────
+            # ── 6 buy conditions ──────────────────────────────────────────────
             mid_range = (c_high + c_low) / 2.0
             conds = {
                 "price":  bool(c_close > ma20),
@@ -484,13 +630,13 @@ async def scan_stocks(request: ScanRequest):
             }
             is_buy = all(conds.values())
 
-            # ── Misc ──────────────────────────────────────────────────────────
             pattern        = _detect_pattern(df.tail(5))
             stop_loss      = round(float(ma20) * 0.97, 2)
             target_price   = round(float(c_close) * 1.15, 2)
             pct_from_52high = round((float(c_close) - week52_high) / week52_high * 100, 1)
 
-            results.append({
+            # ── Build result row ──────────────────────────────────────────────
+            result_row = {
                 "ticker":      ticker,
                 "companyName": company_name,
                 "close":  round(float(c_close),  2),
@@ -504,17 +650,15 @@ async def scan_stocks(request: ScanRequest):
                 "vol_ma20": int(vol_ma20),
                 "rsi14":  round(float(rsi14), 1),
                 "bias":   round(float(bias) * 100, 2),
-                # v3
-                "week52_high":     round(week52_high, 2),
-                "week52_low":      round(week52_low,  2),
-                "pct_from_52high": pct_from_52high,
-                "rs_score":        rs_score,
-                "weekly_trend":    weekly_trend,
-                "max_drawdown_1y": round(max_drawdown_1y * 100, 1),
-                "stop_loss":       stop_loss,
-                "target_price":    target_price,
-                "pattern":         pattern,
-                # v4
+                "week52_high":      round(week52_high, 2),
+                "week52_low":       round(week52_low,  2),
+                "pct_from_52high":  pct_from_52high,
+                "rs_score":         rs_score,
+                "weekly_trend":     weekly_trend,
+                "max_drawdown_1y":  round(max_drawdown_1y * 100, 1),
+                "stop_loss":        stop_loss,
+                "target_price":     target_price,
+                "pattern":          pattern,
                 "macd_line":    round(float(macd_now),  4) if not pd.isna(macd_now) else None,
                 "macd_signal":  round(float(sig_now),   4) if not pd.isna(sig_now)  else None,
                 "macd_hist":    round(float(last["MACD_Hist"]), 4) if not pd.isna(last["MACD_Hist"]) else None,
@@ -532,7 +676,13 @@ async def scan_stocks(request: ScanRequest):
                 "conds":      conds,
                 "sell_flags": sell_flags,
                 "signal":     "YES" if is_buy else "NO",
-            })
+                "predicted_return": None,  # filled below
+            }
+
+            # Apply regression model if available
+            result_row["predicted_return"] = _apply_reg_coeffs(result_row, reg_coeffs)
+
+            results.append(result_row)
 
             if is_buy:
                 triggered_alerts.append(
@@ -546,8 +696,7 @@ async def scan_stocks(request: ScanRequest):
                 "ticker": ticker, "companyName": get_company_name(ticker),
                 "close": None, "open": None, "high": None, "low": None,
                 "ma20": None, "ma60": None, "ma120": None,
-                "volume": None, "vol_ma20": None,
-                "rsi14": None, "bias": None,
+                "volume": None, "vol_ma20": None, "rsi14": None, "bias": None,
                 "week52_high": None, "week52_low": None, "pct_from_52high": None,
                 "rs_score": None, "weekly_trend": None,
                 "max_drawdown_1y": None, "stop_loss": None, "target_price": None,
@@ -558,14 +707,23 @@ async def scan_stocks(request: ScanRequest):
                 "is_breakout20": None, "vol_expansion": None,
                 "inst_foreign": None, "inst_trust": None,
                 "market_regime_bull": market_regime_bull,
+                "predicted_return": None,
                 "conds": {}, "sell_flags": {}, "signal": "ERROR",
             })
 
     if triggered_alerts and request.line_token:
         send_line_notify("\n" + "\n".join(triggered_alerts), request.line_token)
 
+    # Auto-log to scan_log (best-effort, non-blocking)
+    try:
+        _append_scan_log(results, request.market)
+    except Exception as e:
+        print(f"scan_log error (non-fatal): {e}")
+
     return {"status": "success", "data": results}
 
+
+# ── Notify endpoint ────────────────────────────────────────────────────────────
 
 class NotifyRequest(BaseModel):
     message: str
@@ -579,6 +737,8 @@ async def send_notify(req: NotifyRequest):
     send_line_notify(req.message, req.line_token)
     return {"status": "ok"}
 
+
+# ── Backtest endpoint ──────────────────────────────────────────────────────────
 
 @app.post("/api/backtest")
 async def backtest(request: ScanRequest):
@@ -603,8 +763,6 @@ async def backtest(request: ScanRequest):
             safe_loss = avg_loss.copy(); safe_loss[safe_loss == 0] = 1e-10
             df["RSI14"] = 100.0 - (100.0 / (1.0 + avg_gain / safe_loss))
             df["Bias"]  = (df["Close"] - df["MA20"]) / df["MA20"]
-
-            # MACD for backtest
             exp12 = df["Close"].ewm(span=12, adjust=False).mean()
             exp26 = df["Close"].ewm(span=26, adjust=False).mean()
             df["MACD"]     = exp12 - exp26
@@ -618,7 +776,6 @@ async def backtest(request: ScanRequest):
                 if any(pd.isna([row["MA20"], row["MA60"], row["MA120"], row["VMA20"], row["RSI14"], row["Bias"], prev["RSI14"]])):
                     continue
                 mid = (row["High"] + row["Low"]) / 2.0
-                # Original 6 conditions
                 is_buy = (
                     row["Close"] > row["MA20"] and
                     row["Volume"] > 1.2 * row["VMA20"] and
@@ -627,13 +784,11 @@ async def backtest(request: ScanRequest):
                     60.0 < row["RSI14"] < 70.0 and row["RSI14"] > prev["RSI14"] and
                     row["Bias"] < 0.03
                 )
-                # Bonus: MACD above signal
                 macd_ok = (not pd.isna(row["MACD"]) and not pd.isna(row["MACD_Sig"])
                            and row["MACD"] > row["MACD_Sig"])
 
                 if is_buy:
                     entry = float(row["Close"])
-                    # Stop loss exit: if price falls below MA20 in 10 days, exit early
                     exit_price = float(df["Close"].iloc[i + 10])
                     for j in range(1, 11):
                         if float(df["Close"].iloc[i + j]) < float(df["MA20"].iloc[i + j]):
@@ -652,7 +807,6 @@ async def backtest(request: ScanRequest):
             if signals:
                 win_rate   = sum(1 for s in signals if s["win"]) / len(signals)
                 avg_return = sum(s["return10d"] for s in signals) / len(signals)
-                # MACD-filtered subset
                 macd_sig   = [s for s in signals if s["macd_ok"]]
                 macd_wr    = sum(1 for s in macd_sig if s["win"]) / len(macd_sig) if macd_sig else None
                 results.append({
@@ -674,6 +828,134 @@ async def backtest(request: ScanRequest):
             results.append({"ticker": ticker, "error": str(e)})
 
     return {"status": "success", "data": results}
+
+
+# ── Regression endpoints ───────────────────────────────────────────────────────
+
+@app.post("/api/regression/train")
+async def regression_train(market: str = "tw"):
+    if market != "tw":
+        raise HTTPException(400, "Regression currently only supported for TW market")
+
+    ws = _get_or_create_tab(SCAN_LOG_TAB, SCAN_LOG_HEADERS)
+    if not ws:
+        raise HTTPException(503, "Google Sheets not configured")
+
+    records = ws.get_all_records()
+    if not records:
+        return {"status": "insufficient_data", "message": "No scan log yet. Scan stocks daily to build training data.", "eligible": 0}
+
+    # Only use entries older than 10 calendar days
+    cutoff = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    eligible = [r for r in records if str(r.get("scan_date", "")) <= cutoff and r.get("ticker")]
+
+    if len(eligible) < 20:
+        return {
+            "status": "insufficient_data",
+            "message": f"Need 20+ data points older than 10 days (have {len(eligible)}). Keep scanning daily!",
+            "eligible": len(eligible),
+        }
+
+    # Deduplicate (date, ticker)
+    seen, deduped = set(), []
+    for r in eligible:
+        key = (r["scan_date"], r["ticker"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+
+    # Fetch prices per unique ticker
+    unique_tickers = list(set(r["ticker"] for r in deduped))
+    price_cache = {}
+    for ticker in unique_tickers:
+        try:
+            hist = yf.Ticker(ticker).history(period="1y")
+            if not hist.empty:
+                s = hist["Close"].copy()
+                s.index = pd.to_datetime(s.index).normalize().tz_localize(None)
+                price_cache[ticker] = s
+        except Exception:
+            pass
+
+    # Build feature matrix X and target y
+    X_rows, y_vals = [], []
+    for r in deduped:
+        ticker = r["ticker"]
+        if ticker not in price_cache:
+            continue
+        try:
+            prices    = price_cache[ticker]
+            scan_date = pd.Timestamp(r["scan_date"]).tz_localize(None)
+            future    = prices[prices.index >= scan_date]
+            if len(future) < 11:
+                continue
+            entry  = float(future.iloc[0])
+            exit_  = float(future.iloc[10])
+            ret    = (exit_ - entry) / entry
+            features = _row_to_features(r)
+            X_rows.append(features)
+            y_vals.append(ret)
+        except Exception:
+            pass
+
+    n = len(X_rows)
+    if n < 20:
+        return {
+            "status": "insufficient_data",
+            "message": f"Only {n} valid samples after price matching (need 20+). Keep scanning!",
+            "eligible": n,
+        }
+
+    X = np.array(X_rows, dtype=float)
+    y = np.array(y_vals, dtype=float)
+
+    # OLS regression
+    X_b = np.column_stack([np.ones(n), X])
+    coeffs, _, _, _ = np.linalg.lstsq(X_b, y, rcond=None)
+
+    y_pred = X_b @ coeffs
+    ss_res = float(np.sum((y - y_pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    intercept   = float(coeffs[0])
+    feat_coeffs = [float(c) for c in coeffs[1:]]
+
+    # Save to Google Sheets
+    ws_reg = _get_or_create_tab(REG_COEFFS_TAB, ["feature", "value"])
+    if ws_reg:
+        ws_reg.clear()
+        ws_reg.update("A1", [["feature", "value"]] + [
+            ["_r2",        str(round(r2, 6))],
+            ["_n",         str(n)],
+            ["_updated",   datetime.now().strftime("%Y-%m-%d %H:%M")],
+            ["_intercept", str(intercept)],
+        ] + [[name, str(c)] for name, c in zip(FEATURE_NAMES, feat_coeffs)])
+
+    return {
+        "status": "ok",
+        "r2": round(r2, 4),
+        "n_samples": n,
+        "intercept": round(intercept, 6),
+        "feature_names": FEATURE_NAMES,
+        "coefficients": {name: round(c, 6) for name, c in zip(FEATURE_NAMES, feat_coeffs)},
+    }
+
+
+@app.get("/api/regression/coeffs")
+async def regression_coeffs_get(market: str = "tw"):
+    reg = _load_reg_coeffs()
+    if not reg:
+        return {"status": "no_data"}
+    return {
+        "status": "ok",
+        "intercept":    reg["intercept"],
+        "r2":           reg["r2"],
+        "n_samples":    reg["n_samples"],
+        "updated":      reg["updated"],
+        "feature_names": FEATURE_NAMES,
+        "coefficients": reg["coefficients"],
+    }
 
 
 if __name__ == "__main__":
