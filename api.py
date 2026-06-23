@@ -23,6 +23,8 @@ app.add_middleware(
 )
 
 _BUNDLE_PATH   = os.path.join(os.path.dirname(__file__), "tw_names.json")
+FINMIND_TOKEN  = os.environ.get("FINMIND_TOKEN", "")
+FINMIND_BASE   = "https://api.finmindtrade.com/api/v4/data"
 _SHEET_NAME    = "gigi-war-room-watchlist"
 _SHEET_TABS    = {"tw": "gigi-war-room-watchlist", "us": "gigi-us-watchlist"}
 _TICKER_COL    = "ticker"
@@ -48,10 +50,11 @@ SCAN_LOG_HEADERS = [
 ]
 
 # ── Caches ────────────────────────────────────────────────────────────────────
-_INDEX_CACHE: dict = {}
-_INST_CACHE:  dict = {}
-_INFO_CACHE:  dict = {}          # ticker -> {"info": {...}, "ts": float}
-_PREV_SIGNALS: dict = {"date": "", "signals": {}}   # yesterday's buy signals
+_INDEX_CACHE:   dict = {}
+_INST_CACHE:    dict = {}
+_INFO_CACHE:    dict = {}        # ticker -> {"info": {...}, "ts": float}
+_FINMIND_CACHE: dict = {}        # code   -> {"data": {...}, "ts": float}
+_PREV_SIGNALS:  dict = {"date": "", "signals": {}}
 
 
 # ── Company names ─────────────────────────────────────────────────────────────
@@ -143,6 +146,62 @@ def _load_inst_data() -> dict:
         except Exception as e:
             print(f"TWSE inst ({date_str}): {e}")
     return {}
+
+
+# ── FinMind fundamentals (TW stocks — EPS & revenue) ─────────────────────────
+
+def _get_finmind_fundamentals(code: str) -> dict:
+    """Fetch EPS quarterly YoY growth and monthly revenue YoY from FinMind."""
+    result = {"eps_growth": None, "revenue_growth": None}
+    if not FINMIND_TOKEN or not code:
+        return result
+
+    cached = _FINMIND_CACHE.get(code)
+    if cached and time.time() - cached["ts"] < 86400:   # 24-hr cache
+        return cached["data"]
+
+    start = (datetime.now() - timedelta(days=420)).strftime("%Y-%m-%d")
+
+    # ── EPS (quarterly, from financial statements) ────────────────────────────
+    try:
+        r = requests.get(FINMIND_BASE, params={
+            "dataset": "TaiwanStockFinancialStatements",
+            "data_id": code,
+            "start_date": start,
+            "token": FINMIND_TOKEN,
+        }, timeout=12)
+        if r.ok:
+            rows = [d for d in r.json().get("data", []) if d.get("type") == "EPS"]
+            rows = sorted(rows, key=lambda x: x["date"])
+            if len(rows) >= 5:
+                now_eps  = float(rows[-1]["value"])
+                year_eps = float(rows[-5]["value"])   # same quarter last year
+                if year_eps != 0:
+                    result["eps_growth"] = round((now_eps - year_eps) / abs(year_eps) * 100, 1)
+    except Exception as e:
+        print(f"FinMind EPS {code}: {e}")
+
+    # ── Monthly revenue YoY ───────────────────────────────────────────────────
+    try:
+        r = requests.get(FINMIND_BASE, params={
+            "dataset": "TaiwanStockMonthRevenue",
+            "data_id": code,
+            "start_date": start,
+            "token": FINMIND_TOKEN,
+        }, timeout=12)
+        if r.ok:
+            rows = sorted(r.json().get("data", []), key=lambda x: x["date"])
+            if len(rows) >= 13:
+                cur = float(rows[-1]["revenue"])
+                yr  = float(rows[-13]["revenue"])
+                if yr != 0:
+                    result["revenue_growth"] = round((cur - yr) / abs(yr) * 100, 1)
+    except Exception as e:
+        print(f"FinMind Revenue {code}: {e}")
+
+    _FINMIND_CACHE[code] = {"data": result, "ts": time.time()}
+    print(f"FinMind {code}: EPS={result['eps_growth']}% Rev={result['revenue_growth']}%")
+    return result
 
 
 # ── Company fundamentals (EPS, revenue, earnings date) ────────────────────────
@@ -635,7 +694,14 @@ async def scan_stocks(request: ScanRequest):
             confirmed_signal = prev_signals.get(ticker, False)
 
             # ── v6: Fundamentals (EPS, revenue, earnings) ─────────────────────
-            fundamentals = _get_fundamentals(stock)
+            fundamentals = _get_fundamentals(stock)  # earnings date from yfinance
+            # Override EPS & revenue with FinMind for TW stocks (more accurate)
+            if request.market == "tw":
+                fm = _get_finmind_fundamentals(ticker.split(".")[0])
+                if fm["eps_growth"] is not None:
+                    fundamentals["eps_growth"] = fm["eps_growth"]
+                if fm["revenue_growth"] is not None:
+                    fundamentals["revenue_growth"] = fm["revenue_growth"]
 
             pattern       = _detect_pattern(df.tail(5))
             stop_loss     = round(float(ma20)*0.97,2)
