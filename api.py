@@ -309,15 +309,25 @@ def _get_finmind_fundamentals(code: str, shares_actual: int = 0) -> dict:
             cash_by_year: dict = {}
             for d in r.json().get("data", []):
                 yr = str(d.get("year", "") or "")
+                # FinMind TaiwanStockDividend: cash items have "現金" in dividend_item
+                item = str(d.get("dividend_item", "") or "")
                 cash = 0.0
-                for field in ("CashDividend", "cash_dividend",
-                              "CashEarningsDistribution", "cash_earnings_distribution"):
-                    v = d.get(field)
-                    if v not in (None, "", "0", 0):
-                        try:
-                            cash += float(v); break
-                        except Exception:
-                            pass
+                if "現金" in item:
+                    # primary field is "dividend"
+                    try:
+                        cash = float(d.get("dividend", 0) or 0)
+                    except Exception:
+                        cash = 0.0
+                # also try legacy field names as fallback
+                if cash == 0:
+                    for field in ("CashDividend", "cash_dividend",
+                                  "CashEarningsDistribution", "cash_earnings_distribution"):
+                        v = d.get(field)
+                        if v not in (None, "", "0", 0):
+                            try:
+                                cash = float(v); break
+                            except Exception:
+                                pass
                 if cash > 0 and yr:
                     cash_by_year[yr] = cash_by_year.get(yr, 0.0) + cash
 
@@ -332,6 +342,9 @@ def _get_finmind_fundamentals(code: str, shares_actual: int = 0) -> dict:
         payout_rates = [0.50]   # conservative 50% default
 
     # ── 4. 8-Step EPS Forecast ────────────────────────────────────────────────
+    print(f"Forecast inputs {code}: cur_ytd={cur_ytd:.0f} last_ytd={last_ytd:.0f} "
+          f"last_total={last_total:.0f} ttm_rev={ttm_rev:.0f} "
+          f"ttm_eps={ttm_eps:.2f} shares={shares_actual} payouts={payout_rates}")
     try:
         if (cur_ytd > 0 and last_ytd > 0 and last_total > 0
                 and ttm_rev > 0 and ttm_eps != 0 and shares_actual > 0):
@@ -856,7 +869,20 @@ async def scan_stocks(request: ScanRequest):
             if request.market == "tw":
                 try:
                     _info = _get_info_cached(stock)
-                    _shares = int(_info.get("sharesOutstanding", 0))
+                    _shares = int(_info.get("sharesOutstanding", 0) or 0)
+                    # yfinance often omits sharesOutstanding for TW stocks
+                    # fall back to marketCap / close price (both in TWD for .TW)
+                    if _shares == 0:
+                        _mktcap = int(_info.get("marketCap", 0) or 0)
+                        _price  = float(c_close) if c_close else 0
+                        if _mktcap > 0 and _price > 0:
+                            _shares = int(_mktcap / _price)
+                    # last resort: fast_info.shares
+                    if _shares == 0:
+                        try:
+                            _shares = int(stock.fast_info.shares or 0)
+                        except Exception:
+                            pass
                 except Exception:
                     _shares = 0
                 fm = _get_finmind_fundamentals(ticker.split(".")[0], shares_actual=_shares)
