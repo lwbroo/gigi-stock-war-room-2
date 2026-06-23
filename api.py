@@ -148,59 +148,214 @@ def _load_inst_data() -> dict:
     return {}
 
 
-# ── FinMind fundamentals (TW stocks — EPS & revenue) ─────────────────────────
+# ── 8-Step EPS Forecast (pure function, unit-agnostic) ────────────────────────
 
-def _get_finmind_fundamentals(code: str) -> dict:
-    """Fetch EPS quarterly YoY growth and monthly revenue YoY from FinMind."""
-    result = {"eps_growth": None, "revenue_growth": None}
+def _forecast_eps_8step(
+    current_ytd_rev: float,
+    last_ytd_rev: float,
+    last_total_rev: float,
+    ttm_net_income_rate: float,
+    outstanding_shares: float,
+    past_3y_payout_rates: list,
+) -> dict:
+    """
+    8-step annual EPS & dividend forecast.
+
+    Revenue params: same unit (千元 TWD from FinMind).
+    outstanding_shares: actual shares (not thousands).
+    Returns EPS & dividend in TWD/share.
+
+    Unit proof:
+      est_net_income [千元] × 1000 [元/千元] ÷ shares [股] = EPS [元/股] ✓
+    """
+    if last_ytd_rev == 0:
+        raise ValueError("last_ytd_rev cannot be 0")
+    if outstanding_shares == 0:
+        raise ValueError("outstanding_shares cannot be 0")
+    if not past_3y_payout_rates:
+        raise ValueError("past_3y_payout_rates cannot be empty")
+
+    # Phase 1 — Revenue
+    growth_yoy  = (current_ytd_rev - last_ytd_rev) / last_ytd_rev     # Step 1
+    est_revenue = last_total_rev * (1 + growth_yoy)                    # Steps 2-3
+
+    # Phase 2 — EPS
+    est_net_income = est_revenue * ttm_net_income_rate                 # Steps 4-5
+    est_eps = (est_net_income * 1000) / outstanding_shares             # Step 6
+
+    # Phase 3 — Dividend
+    avg_payout   = sum(past_3y_payout_rates) / len(past_3y_payout_rates)  # Step 7
+    est_dividend = est_eps * avg_payout                                     # Step 8
+
+    return {
+        "revenue_growth_yoy":       round(growth_yoy * 100, 2),
+        "estimated_annual_revenue": round(est_revenue, 0),
+        "estimated_eps":            round(est_eps, 2),
+        "estimated_cash_dividend":  round(est_dividend, 2),
+    }
+
+
+# ── FinMind fundamentals (TW stocks) ─────────────────────────────────────────
+
+def _get_finmind_fundamentals(code: str, shares_actual: int = 0) -> dict:
+    """
+    Fetch from FinMind:
+      - eps_growth    : quarterly YoY EPS growth %
+      - revenue_growth: monthly YoY revenue growth %
+      - est_eps       : 8-step forecasted annual EPS (TWD/share)
+      - est_dividend  : forecasted cash dividend (TWD/share)
+      - est_rev_growth: forecast-implied YTD revenue growth %
+    """
+    result = {
+        "eps_growth": None, "revenue_growth": None,
+        "est_eps": None, "est_dividend": None, "est_rev_growth": None,
+    }
     if not FINMIND_TOKEN or not code:
         return result
 
     cached = _FINMIND_CACHE.get(code)
-    if cached and time.time() - cached["ts"] < 86400:   # 24-hr cache
+    if cached and time.time() - cached["ts"] < 86400:
         return cached["data"]
 
-    start = (datetime.now() - timedelta(days=420)).strftime("%Y-%m-%d")
+    now        = datetime.now()
+    this_year  = now.year
+    last_year  = this_year - 1
+    start      = (now - timedelta(days=450)).strftime("%Y-%m-%d")
+    div_start  = (now - timedelta(days=4 * 365)).strftime("%Y-%m-%d")
 
-    # ── EPS (quarterly, from financial statements) ────────────────────────────
+    # ── 1. Monthly Revenue ────────────────────────────────────────────────────
+    rev_rows = []
     try:
         r = requests.get(FINMIND_BASE, params={
-            "dataset": "TaiwanStockFinancialStatements",
-            "data_id": code,
-            "start_date": start,
-            "token": FINMIND_TOKEN,
+            "dataset": "TaiwanStockMonthRevenue", "data_id": code,
+            "start_date": start, "token": FINMIND_TOKEN,
         }, timeout=12)
         if r.ok:
-            rows = [d for d in r.json().get("data", []) if d.get("type") == "EPS"]
-            rows = sorted(rows, key=lambda x: x["date"])
-            if len(rows) >= 5:
-                now_eps  = float(rows[-1]["value"])
-                year_eps = float(rows[-5]["value"])   # same quarter last year
-                if year_eps != 0:
-                    result["eps_growth"] = round((now_eps - year_eps) / abs(year_eps) * 100, 1)
+            rev_rows = sorted(
+                r.json().get("data", []),
+                key=lambda x: (int(x.get("revenue_year", 0)), int(x.get("revenue_month", 0)))
+            )
+    except Exception as e:
+        print(f"FinMind Rev {code}: {e}")
+
+    cur_ytd = last_ytd = last_total = ttm_rev = 0.0
+    if rev_rows:
+        try:
+            last_rec = rev_rows[-1]
+            cur_m    = int(last_rec.get("revenue_month", 0))
+
+            # YoY: latest month vs same month last year
+            same_m_ly = [x for x in rev_rows
+                         if int(x.get("revenue_year", 0)) == last_year
+                         and int(x.get("revenue_month", 0)) == cur_m]
+            if same_m_ly:
+                lr = float(same_m_ly[0]["revenue"])
+                if lr != 0:
+                    result["revenue_growth"] = round(
+                        (float(last_rec["revenue"]) - lr) / lr * 100, 1)
+
+            # Forecast components
+            cur_ytd    = sum(float(x["revenue"]) for x in rev_rows
+                            if int(x.get("revenue_year", 0)) == this_year
+                            and int(x.get("revenue_month", 0)) <= cur_m)
+            last_ytd   = sum(float(x["revenue"]) for x in rev_rows
+                            if int(x.get("revenue_year", 0)) == last_year
+                            and int(x.get("revenue_month", 0)) <= cur_m)
+            last_total = sum(float(x["revenue"]) for x in rev_rows
+                            if int(x.get("revenue_year", 0)) == last_year)
+            ttm_rev    = sum(float(x["revenue"]) for x in rev_rows[-12:]) \
+                         if len(rev_rows) >= 12 else 0.0
+        except Exception as e:
+            print(f"FinMind Rev calc {code}: {e}")
+
+    # ── 2. Quarterly EPS ──────────────────────────────────────────────────────
+    ttm_eps    = 0.0
+    annual_eps: dict = {}
+    try:
+        r = requests.get(FINMIND_BASE, params={
+            "dataset": "TaiwanStockFinancialStatements", "data_id": code,
+            "start_date": start, "token": FINMIND_TOKEN,
+        }, timeout=12)
+        if r.ok:
+            eps_rows = sorted(
+                [d for d in r.json().get("data", []) if d.get("type") == "EPS"],
+                key=lambda x: x["date"]
+            )
+            if eps_rows:
+                # YoY same-quarter EPS growth
+                if len(eps_rows) >= 5:
+                    ne = float(eps_rows[-1]["value"])
+                    ye = float(eps_rows[-5]["value"])
+                    if ye != 0:
+                        result["eps_growth"] = round((ne - ye) / abs(ye) * 100, 1)
+                # TTM EPS (last 4 quarters)
+                if len(eps_rows) >= 4:
+                    ttm_eps = sum(float(x["value"]) for x in eps_rows[-4:])
+                # Annual EPS by year (for payout ratio later)
+                for rec in eps_rows:
+                    yr = rec["date"][:4]
+                    annual_eps[yr] = annual_eps.get(yr, 0.0) + float(rec["value"])
     except Exception as e:
         print(f"FinMind EPS {code}: {e}")
 
-    # ── Monthly revenue YoY ───────────────────────────────────────────────────
+    # ── 3. Dividend payout rates (past 3 years) ───────────────────────────────
+    payout_rates: list = []
     try:
         r = requests.get(FINMIND_BASE, params={
-            "dataset": "TaiwanStockMonthRevenue",
-            "data_id": code,
-            "start_date": start,
-            "token": FINMIND_TOKEN,
+            "dataset": "TaiwanStockDividend", "data_id": code,
+            "start_date": div_start, "token": FINMIND_TOKEN,
         }, timeout=12)
         if r.ok:
-            rows = sorted(r.json().get("data", []), key=lambda x: x["date"])
-            if len(rows) >= 13:
-                cur = float(rows[-1]["revenue"])
-                yr  = float(rows[-13]["revenue"])
-                if yr != 0:
-                    result["revenue_growth"] = round((cur - yr) / abs(yr) * 100, 1)
+            cash_by_year: dict = {}
+            for d in r.json().get("data", []):
+                yr = str(d.get("year", "") or "")
+                cash = 0.0
+                for field in ("CashDividend", "cash_dividend",
+                              "CashEarningsDistribution", "cash_earnings_distribution"):
+                    v = d.get(field)
+                    if v not in (None, "", "0", 0):
+                        try:
+                            cash += float(v); break
+                        except Exception:
+                            pass
+                if cash > 0 and yr:
+                    cash_by_year[yr] = cash_by_year.get(yr, 0.0) + cash
+
+            for yr, div in sorted(cash_by_year.items(), reverse=True)[:3]:
+                eps_yr = annual_eps.get(yr, 0.0)
+                if eps_yr > 0 and div > 0:
+                    payout_rates.append(round(div / eps_yr, 4))
     except Exception as e:
-        print(f"FinMind Revenue {code}: {e}")
+        print(f"FinMind Div {code}: {e}")
+
+    if not payout_rates:
+        payout_rates = [0.50]   # conservative 50% default
+
+    # ── 4. 8-Step EPS Forecast ────────────────────────────────────────────────
+    try:
+        if (cur_ytd > 0 and last_ytd > 0 and last_total > 0
+                and ttm_rev > 0 and ttm_eps != 0 and shares_actual > 0):
+            # TTM net income rate: (TTM_EPS × shares → 元) → 千元 ÷ TTM_Rev (千元)
+            ttm_net_income_千元 = ttm_eps * shares_actual / 1000
+            ttm_rate = ttm_net_income_千元 / ttm_rev
+            fc = _forecast_eps_8step(
+                current_ytd_rev      = cur_ytd,
+                last_ytd_rev         = last_ytd,
+                last_total_rev       = last_total,
+                ttm_net_income_rate  = ttm_rate,
+                outstanding_shares   = float(shares_actual),
+                past_3y_payout_rates = payout_rates[:3],
+            )
+            result["est_eps"]       = fc["estimated_eps"]
+            result["est_dividend"]  = fc["estimated_cash_dividend"]
+            result["est_rev_growth"]= fc["revenue_growth_yoy"]
+    except Exception as e:
+        print(f"Forecast {code}: {e}")
 
     _FINMIND_CACHE[code] = {"data": result, "ts": time.time()}
-    print(f"FinMind {code}: EPS={result['eps_growth']}% Rev={result['revenue_growth']}%")
+    print(f"FinMind {code}: eps_g={result.get('eps_growth')}% "
+          f"rev_g={result.get('revenue_growth')}% "
+          f"est_eps={result.get('est_eps')} est_div={result.get('est_dividend')}")
     return result
 
 
@@ -536,6 +691,7 @@ async def scan_stocks(request: ScanRequest):
             "confirmed_signal":False,
             "earnings_date":None,"near_earnings":False,
             "eps_growth":None,"revenue_growth":None,
+            "est_eps":None,"est_dividend":None,"est_rev_growth":None,
             "market_week_return":market_week_return,"market_week_rising":market_week_rising,
             "predicted_return":None,
             "conds":{},"sell_flags":{},"signal":"NO_DATA",
@@ -695,13 +851,24 @@ async def scan_stocks(request: ScanRequest):
 
             # ── v6: Fundamentals (EPS, revenue, earnings) ─────────────────────
             fundamentals = _get_fundamentals(stock)  # earnings date from yfinance
+            fm_est: dict = {}
             # Override EPS & revenue with FinMind for TW stocks (more accurate)
             if request.market == "tw":
-                fm = _get_finmind_fundamentals(ticker.split(".")[0])
+                try:
+                    _info = _get_info_cached(stock)
+                    _shares = int(_info.get("sharesOutstanding", 0))
+                except Exception:
+                    _shares = 0
+                fm = _get_finmind_fundamentals(ticker.split(".")[0], shares_actual=_shares)
                 if fm["eps_growth"] is not None:
                     fundamentals["eps_growth"] = fm["eps_growth"]
                 if fm["revenue_growth"] is not None:
                     fundamentals["revenue_growth"] = fm["revenue_growth"]
+                fm_est = {
+                    "est_eps":        fm.get("est_eps"),
+                    "est_dividend":   fm.get("est_dividend"),
+                    "est_rev_growth": fm.get("est_rev_growth"),
+                }
 
             pattern       = _detect_pattern(df.tail(5))
             stop_loss     = round(float(ma20)*0.97,2)
@@ -738,6 +905,9 @@ async def scan_stocks(request: ScanRequest):
                 "near_earnings":    fundamentals["near_earnings"],
                 "eps_growth":       fundamentals["eps_growth"],
                 "revenue_growth":   fundamentals["revenue_growth"],
+                "est_eps":          fm_est.get("est_eps"),
+                "est_dividend":     fm_est.get("est_dividend"),
+                "est_rev_growth":   fm_est.get("est_rev_growth"),
                 "market_week_return": market_week_return,
                 "market_week_rising": market_week_rising,
                 "predicted_return": None,
@@ -904,6 +1074,37 @@ async def regression_coeffs_get(market: str = "tw"):
     return {"status":"ok","intercept":reg["intercept"],"r2":reg["r2"],
             "n_samples":reg["n_samples"],"updated":reg["updated"],
             "feature_names":FEATURE_NAMES,"coefficients":reg["coefficients"]}
+
+@app.get("/api/forecast/{code}")
+async def forecast_eps(code: str):
+    """
+    Direct 8-step EPS forecast for a TW stock code (e.g. 2330).
+    Fetches all needed data from FinMind + yfinance and returns the forecast.
+    """
+    if not FINMIND_TOKEN:
+        raise HTTPException(status_code=503, detail="FINMIND_TOKEN not set")
+    try:
+        stock = yf.Ticker(f"{code}.TW")
+        info  = _get_info_cached(stock)
+        shares = int(info.get("sharesOutstanding", 0))
+    except Exception:
+        shares = 0
+
+    # Force-refresh by evicting cache entry so this endpoint always returns fresh data
+    _FINMIND_CACHE.pop(code, None)
+    fm = _get_finmind_fundamentals(code, shares_actual=shares)
+
+    return {
+        "code": code,
+        "companyName": info.get("shortName") or info.get("longName") or code if shares else code,
+        "shares_actual": shares,
+        "eps_growth":     fm.get("eps_growth"),
+        "revenue_growth": fm.get("revenue_growth"),
+        "est_eps":        fm.get("est_eps"),
+        "est_dividend":   fm.get("est_dividend"),
+        "est_rev_growth": fm.get("est_rev_growth"),
+    }
+
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=8000)
