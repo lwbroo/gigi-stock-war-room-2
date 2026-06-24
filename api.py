@@ -1101,6 +1101,246 @@ async def regression_coeffs_get(market: str = "tw"):
             "n_samples":reg["n_samples"],"updated":reg["updated"],
             "feature_names":FEATURE_NAMES,"coefficients":reg["coefficients"]}
 
+# ── FinMind Historical Backtest ───────────────────────────────────────────────
+
+def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized indicator computation for backtesting (full DataFrame at once)."""
+    d = df.copy()
+    d["MA20"]  = d["Close"].rolling(20).mean()
+    d["MA60"]  = d["Close"].rolling(60).mean()
+    d["MA120"] = d["Close"].rolling(120).mean()
+    d["VMA20"] = d["Volume"].rolling(20).mean()
+
+    # RSI-14
+    delta = d["Close"].diff()
+    ag = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    al = (-delta).clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    d["RSI14"] = 100.0 - 100.0 / (1.0 + ag / al.replace(0, 1e-10))
+    d["Bias"]  = (d["Close"] - d["MA20"]) / d["MA20"] * 100
+
+    # MACD 12/26/9
+    e12 = d["Close"].ewm(span=12, adjust=False).mean()
+    e26 = d["Close"].ewm(span=26, adjust=False).mean()
+    d["MACD"]     = e12 - e26
+    d["MACD_Sig"] = d["MACD"].ewm(span=9, adjust=False).mean()
+    d["MACD_H"]   = d["MACD"] - d["MACD_Sig"]
+
+    # ADX-14 (vectorized)
+    tr = pd.concat([
+        d["High"] - d["Low"],
+        (d["High"] - d["Close"].shift()).abs(),
+        (d["Low"]  - d["Close"].shift()).abs(),
+    ], axis=1).max(axis=1)
+    up   = d["High"].diff()
+    down = -d["Low"].diff()
+    dm_p = up.where((up > down) & (up > 0), 0.0)
+    dm_m = down.where((down > up) & (down > 0), 0.0)
+    atr  = tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    dip  = dm_p.ewm(alpha=1/14, min_periods=14, adjust=False).mean() / atr.replace(0, np.nan) * 100
+    dim  = dm_m.ewm(alpha=1/14, min_periods=14, adjust=False).mean() / atr.replace(0, np.nan) * 100
+    dx   = (dip - dim).abs() / (dip + dim).replace(0, np.nan) * 100
+    d["ADX14"]  = dx.ewm(alpha=1/14, min_periods=14, adjust=False).mean().fillna(0)
+    d["DI_plus"]= dip.fillna(0)
+    d["DI_minus"]= dim.fillna(0)
+
+    # OBV
+    obv = (d["Volume"] * np.sign(d["Close"].diff()).fillna(0)).cumsum()
+    d["OBV"]     = obv
+    d["OBV_MA20"]= obv.rolling(20).mean()
+
+    # 5-day return (extended check)
+    d["ret5d"]      = d["Close"].pct_change(5) * 100
+    d["is_extended"]= d["ret5d"] > 8
+
+    # Monthly trend proxy: MA20 > MA60 > MA120
+    d["monthly_trend"] = (d["MA20"] > d["MA60"]) & (d["MA60"] > d["MA120"])
+
+    return d
+
+
+def _bt_is_buy(row) -> bool:
+    """Apply core signal logic to one row of computed indicators."""
+    try:
+        for col in ["MA20", "VMA20", "RSI14", "Bias", "MACD", "MACD_Sig", "ADX14"]:
+            if pd.isna(row[col]):
+                return False
+        return (
+            row["Close"]    > row["MA20"]      and
+            row["Volume"]   > row["VMA20"]     and
+            40 <= row["RSI14"] <= 75           and
+            -8 <= row["Bias"]  <= 8            and
+            row["MACD"]     > row["MACD_Sig"]  and
+            row["ADX14"]    > 20               and
+            row["OBV"]      > row["OBV_MA20"]  and
+            bool(row["monthly_trend"])          and
+            not bool(row["is_extended"])
+        )
+    except Exception:
+        return False
+
+
+def _backtest_ticker(
+    code: str, start_date: str, end_date: str,
+    hold_days: int = 10, company_name: str = "",
+) -> dict:
+    """
+    Single-stock backtest using FinMind TaiwanStockPrice.
+    Fetches full OHLCV history, computes indicators vectorized, finds all
+    signal days in [start_date, end_date], measures forward returns.
+    """
+    base = {
+        "ticker": code, "company_name": company_name,
+        "total_signals": 0, "win_rate": None,
+        "avg_return": None, "avg_win": None,
+        "avg_loss": None, "sharpe": None, "signals": [],
+    }
+
+    # Need 250-day warm-up before start, plus hold_days buffer after end
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=250)).strftime("%Y-%m-%d")
+    fetch_end   = (datetime.strptime(end_date,   "%Y-%m-%d") + timedelta(days=hold_days + 15)).strftime("%Y-%m-%d")
+
+    try:
+        r = requests.get(FINMIND_BASE, params={
+            "dataset": "TaiwanStockPrice", "data_id": code,
+            "start_date": fetch_start, "end_date": fetch_end,
+            "token": FINMIND_TOKEN,
+        }, timeout=30)
+        raw = r.json().get("data", []) if r.ok else []
+    except Exception as e:
+        return {**base, "error": str(e)}
+
+    if len(raw) < 60:
+        return {**base, "error": f"Only {len(raw)} days available"}
+
+    # Build standardised DataFrame from FinMind field names
+    df = pd.DataFrame(raw)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+
+    # FinMind uses lowercase open/max/min/close + Trading_Volume
+    for src, dst in [("open","Open"),("max","High"),("min","Low"),
+                     ("close","Close"),("Trading_Volume","Volume")]:
+        if src in df.columns:
+            df[dst] = pd.to_numeric(df[src], errors="coerce")
+
+    for col in ["Open","High","Low","Close","Volume"]:
+        if col not in df.columns:
+            return {**base, "error": f"Missing column: {col}"}
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
+    df["Volume"] = df["Volume"].fillna(0)
+
+    # Compute all indicators
+    df = _compute_bt_indicators(df)
+
+    # Restrict signal detection to user date range
+    s_dt = pd.to_datetime(start_date)
+    e_dt = pd.to_datetime(end_date)
+    in_range = df[(df["date"] >= s_dt) & (df["date"] <= e_dt)]
+
+    signals = []
+    for idx, row in in_range.iterrows():
+        if not _bt_is_buy(row):
+            continue
+
+        # Exit: hold_days trading-day rows after entry
+        future = df[df.index > idx].head(hold_days)
+        if len(future) < hold_days:
+            continue
+
+        entry  = float(row["Close"])
+        exit_p = float(future.iloc[-1]["Close"])
+        if entry <= 0:
+            continue
+
+        ret_pct = (exit_p - entry) / entry * 100
+        max_dd  = float((future["Low"].min() - entry) / entry * 100)
+
+        signals.append({
+            "date":        row["date"].strftime("%Y-%m-%d"),
+            "entry_price": round(entry,   2),
+            "exit_price":  round(exit_p,  2),
+            "return_pct":  round(ret_pct, 2),
+            "max_dd":      round(max_dd,  2),
+            "won":         ret_pct > 0,
+            "rsi14":  round(float(row["RSI14"]),  1) if not pd.isna(row["RSI14"])  else None,
+            "adx14":  round(float(row["ADX14"]),  1) if not pd.isna(row["ADX14"])  else None,
+            "macd_h": round(float(row["MACD_H"]), 4) if not pd.isna(row["MACD_H"]) else None,
+        })
+
+    if not signals:
+        return base
+
+    rets   = [s["return_pct"] for s in signals]
+    wins   = [r for r in rets if r > 0]
+    losses = [r for r in rets if r <= 0]
+    avg    = float(np.mean(rets))
+    std    = float(np.std(rets)) if len(rets) > 1 else 0.0
+    sharpe = round(avg / std * (252 / hold_days) ** 0.5, 2) if std > 0 else None
+
+    return {
+        **base,
+        "total_signals": len(signals),
+        "win_rate":  round(len(wins) / len(signals), 3),
+        "avg_return": round(avg, 2),
+        "avg_win":   round(float(np.mean(wins)),   2) if wins   else None,
+        "avg_loss":  round(float(np.mean(losses)), 2) if losses else None,
+        "sharpe":    sharpe,
+        "signals":   signals,
+    }
+
+
+class BacktestFullRequest(BaseModel):
+    tickers:    List[str]
+    market:     str = "tw"
+    start_date: Optional[str] = None
+    end_date:   Optional[str] = None
+    hold_days:  int = 10
+
+
+@app.post("/api/backtest/full")
+async def backtest_full(request: BacktestFullRequest):
+    """
+    Full historical backtest using FinMind TaiwanStockPrice.
+    Replays indicator logic on every past trading day and measures forward returns.
+    Returns per-ticker stats + aggregate summary.
+    """
+    if not FINMIND_TOKEN:
+        raise HTTPException(503, "FINMIND_TOKEN not configured")
+
+    now   = datetime.now()
+    start = request.start_date or (now - timedelta(days=730)).strftime("%Y-%m-%d")
+    end   = request.end_date   or now.strftime("%Y-%m-%d")
+    hold  = max(1, min(int(request.hold_days), 60))
+
+    results = []
+    for ticker in request.tickers[:20]:
+        code = ticker.split(".")[0] if request.market == "tw" else ticker
+        name = get_company_name(ticker)
+        res  = _backtest_ticker(code, start, end, hold, company_name=name)
+        results.append(res)
+        print(f"BT {code}: signals={res.get('total_signals')} "
+              f"WR={res.get('win_rate')} avg={res.get('avg_return')}")
+
+    all_rets  = [s["return_pct"] for r in results for s in r.get("signals", [])]
+    total_sig = sum(r.get("total_signals", 0) for r in results)
+    avg_all   = float(np.mean(all_rets))   if all_rets else None
+    std_all   = float(np.std(all_rets))    if len(all_rets) > 1 else None
+    sharpe_all= round(avg_all / std_all * (252 / hold) ** 0.5, 2) \
+                if avg_all is not None and std_all and std_all > 0 else None
+
+    summary = {
+        "total_signals": total_sig,
+        "win_rate":  round(sum(1 for x in all_rets if x > 0) / len(all_rets), 3) if all_rets else None,
+        "avg_return": round(avg_all, 2) if avg_all is not None else None,
+        "sharpe":    sharpe_all,
+        "start_date": start, "end_date": end, "hold_days": hold,
+    }
+
+    return {"results": results, "summary": summary}
+
+
 @app.get("/api/forecast/{code}")
 async def forecast_eps(code: str):
     """
