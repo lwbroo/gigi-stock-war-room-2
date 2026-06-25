@@ -1359,6 +1359,95 @@ def _analyze_signals(all_signals: list) -> dict:
     }
 
 
+def _collect_wide_signals(
+    code: str, start_date: str, end_date: str,
+    hold_days: int = 10, company_name: str = "",
+) -> list:
+    """
+    Collect all candidate signals passing BASE conditions only (no RSI/ADX/MACD_H filters).
+    Each signal carries its indicator values so grid search can filter in memory.
+    Base: Close>MA20, Vol>VMA20, MACD>Signal, OBV>OBV_MA20, monthly_trend, not extended.
+    """
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=300)).strftime("%Y-%m-%d")
+    fetch_end   = (datetime.strptime(end_date,   "%Y-%m-%d") + timedelta(days=hold_days + 15)).strftime("%Y-%m-%d")
+
+    try:
+        r = requests.get(FINMIND_BASE, params={
+            "dataset": "TaiwanStockPrice", "data_id": code,
+            "start_date": fetch_start, "end_date": fetch_end,
+            "token": FINMIND_TOKEN,
+        }, timeout=30)
+        raw = r.json().get("data", []) if r.ok else []
+    except Exception:
+        return []
+
+    if len(raw) < 60:
+        return []
+
+    df = pd.DataFrame(raw)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").reset_index(drop=True)
+    for src, dst in [("open","Open"),("max","High"),("min","Low"),
+                     ("close","Close"),("Trading_Volume","Volume")]:
+        if src in df.columns:
+            df[dst] = pd.to_numeric(df[src], errors="coerce")
+    for col in ["Open","High","Low","Close","Volume"]:
+        if col not in df.columns:
+            return []
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
+    df["Volume"] = df["Volume"].fillna(0)
+    df = _compute_bt_indicators(df)
+
+    s_dt = pd.to_datetime(start_date)
+    e_dt = pd.to_datetime(end_date)
+    in_range = df[(df["date"] >= s_dt) & (df["date"] <= e_dt)]
+
+    signals = []
+    for idx, row in in_range.iterrows():
+        try:
+            for col in ["MA20","VMA20","RSI14","Bias","MACD","MACD_Sig","ADX14","MACD_H"]:
+                if pd.isna(row[col]):
+                    raise ValueError()
+            # Base conditions only — RSI/ADX/MACD_H not filtered here
+            if not (row["Close"] > row["MA20"] and
+                    row["Volume"] > row["VMA20"] and
+                    row["MACD"] > row["MACD_Sig"] and
+                    row["OBV"] > row["OBV_MA20"] and
+                    bool(row["monthly_trend"]) and
+                    not bool(row["is_extended"])):
+                continue
+        except Exception:
+            continue
+
+        # MACD_H rolling percentile (0-100) vs past 50 bars
+        past_mh = df["MACD_H"].iloc[max(0, idx - 50):idx].dropna()
+        mh_pct = float((past_mh < float(row["MACD_H"])).mean() * 100) if len(past_mh) >= 5 else 50.0
+
+        future = df[df.index > idx].head(hold_days)
+        if len(future) < hold_days:
+            continue
+        entry  = float(row["Close"])
+        exit_p = float(future.iloc[-1]["Close"])
+        if entry <= 0:
+            continue
+
+        ret_pct = (exit_p - entry) / entry * 100
+        signals.append({
+            "ticker":       code,
+            "company_name": company_name,
+            "date":         row["date"].strftime("%Y-%m-%d"),
+            "rsi14":        round(float(row["RSI14"]), 1),
+            "adx14":        round(float(row["ADX14"]), 1),
+            "bias":         round(float(row["Bias"]),  2),
+            "macd_h":       round(float(row["MACD_H"]), 4),
+            "macd_h_pct":   round(mh_pct, 1),
+            "return_pct":   round(ret_pct, 2),
+            "won":          ret_pct > 0,
+        })
+    return signals
+
+
 class BacktestFullRequest(BaseModel):
     tickers:    List[str]
     market:     str = "tw"
@@ -1411,6 +1500,93 @@ async def backtest_full(request: BacktestFullRequest):
         "results":            results,
         "summary":            summary,
         "condition_analysis": _analyze_signals(all_signals),
+    }
+
+
+@app.post("/api/backtest/gridsearch")
+async def backtest_gridsearch(request: BacktestFullRequest):
+    """
+    Grid search over RSI / ADX / MACD_H-percentile parameters.
+    Step 1 — collect ALL candidate signals (base conditions only) across all tickers.
+    Step 2 — filter in-memory for each parameter combo and compute Sharpe/win_rate.
+    Returns top 20 combos sorted by Sharpe, plus current-params rank.
+    """
+    if not FINMIND_TOKEN:
+        raise HTTPException(503, "FINMIND_TOKEN not configured")
+
+    now   = datetime.now()
+    start = request.start_date or (now - timedelta(days=730)).strftime("%Y-%m-%d")
+    end   = request.end_date   or now.strftime("%Y-%m-%d")
+    hold  = max(1, min(int(request.hold_days), 60))
+
+    # ── Step 1: collect candidate signals ──────────────────────────────────
+    all_signals: list = []
+    for ticker in request.tickers[:20]:
+        code = ticker.split(".")[0] if request.market == "tw" else ticker
+        name = get_company_name(ticker)
+        sigs = _collect_wide_signals(code, start, end, hold, company_name=name)
+        all_signals.extend(sigs)
+        print(f"GS {code}: {len(sigs)} candidates")
+
+    if len(all_signals) < 8:
+        return {"error": "Not enough candidate signals", "total_candidates": len(all_signals)}
+
+    # ── Step 2: build parameter grid ───────────────────────────────────────
+    grid = []
+    for rsi_lo in [45, 48, 50, 52]:
+        for rsi_hi in [58, 60, 62, 65]:
+            if rsi_lo >= rsi_hi:
+                continue
+            for adx_lo in [18, 20]:
+                for adx_hi in [25, 28, 30, 35]:
+                    if adx_lo >= adx_hi:
+                        continue
+                    for mh_pct in [33, 40, 50, 60, 66]:
+                        grid.append({
+                            "rsi_lo": rsi_lo, "rsi_hi": rsi_hi,
+                            "adx_lo": adx_lo, "adx_hi": adx_hi,
+                            "macd_h_pct_min": mh_pct,
+                        })
+
+    # ── Step 3: evaluate each combo (pure in-memory filter) ────────────────
+    results = []
+    for p in grid:
+        sub = [s for s in all_signals
+               if p["rsi_lo"] <= s["rsi14"] <= p["rsi_hi"]
+               and p["adx_lo"] <= s["adx14"] <= p["adx_hi"]
+               and s["macd_h_pct"] >= p["macd_h_pct_min"]]
+
+        if len(sub) < 5:
+            continue
+
+        rets  = [s["return_pct"] for s in sub]
+        wins  = sum(1 for r in rets if r > 0)
+        avg   = float(np.mean(rets))
+        std   = float(np.std(rets)) if len(rets) > 1 else 0.0
+        sharpe = round(avg / std * (252 / hold) ** 0.5, 2) if std > 0 else None
+
+        results.append({
+            "params":     p,
+            "n_signals":  len(sub),
+            "win_rate":   round(wins / len(sub), 3),
+            "avg_return": round(avg, 2),
+            "sharpe":     sharpe,
+        })
+
+    results.sort(key=lambda x: (x["sharpe"] or -99), reverse=True)
+
+    # Mark which rank the current live params achieve
+    current = {"rsi_lo": 50, "rsi_hi": 60, "adx_lo": 20, "adx_hi": 30, "macd_h_pct_min": 50}
+    current_rank = next(
+        (i + 1 for i, r in enumerate(results) if r["params"] == current), None
+    )
+
+    return {
+        "total_candidates": len(all_signals),
+        "combos_tested":    len(results),
+        "current_rank":     current_rank,
+        "current_params":   current,
+        "top_results":      results[:20],
     }
 
 
