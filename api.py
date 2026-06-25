@@ -747,7 +747,7 @@ async def scan_stocks(request: ScanRequest):
             df["MACD"]       = e12-e26
             df["MACD_Sig"]   = df["MACD"].ewm(span=9,adjust=False).mean()
             df["MACD_H"]     = df["MACD"]-df["MACD_Sig"]
-            df["MACD_H_Med"] = df["MACD_H"].rolling(50).median()  # 50日中位數：強動能篩選
+            df["MACD_H_Med"] = df["MACD_H"].rolling(50).quantile(0.6)  # 60th percentile：Grid Search 最優
 
             # ── ADX-14 ───────────────────────────────────────────────────────
             df["TR"]  = df[[(df["High"]-df["Low"]),(df["High"]-df["Close"].shift(1)).abs(),(df["Low"]-df["Close"].shift(1)).abs()]].max(axis=1) if False else \
@@ -850,7 +850,7 @@ async def scan_stocks(request: ScanRequest):
                 "volume": bool(c_vol>1.2*vol_ma20),
                 "trend":  bool(ma20>ma60 and ma60>ma120),
                 "candle": bool(c_close>c_open and c_close>mid),
-                "rsi":    bool(50.0 < rsi14 <= 60.0 and rsi14 > prev_rsi),
+                "rsi":    bool(52.0 < rsi14 <= 60.0 and rsi14 > prev_rsi),
                 "bias":   bool(bias < 0.03),
             }
             sell_flags = {
@@ -864,7 +864,7 @@ async def scan_stocks(request: ScanRequest):
             macd_h_strong = (not pd.isna(_mh) and not pd.isna(_mh_med)
                              and float(_mh) > float(_mh_med))
             # ADX 20-30：有趨勢但未過熱（ADX>30 回測勝率僅 33%）
-            adx_ok = (adx14v is not None and 20 <= adx14v <= 30)
+            adx_ok = (adx14v is not None and 18 <= adx14v <= 30)
             is_buy = all(conds.values()) and macd_h_strong and adx_ok
 
             # ── v6: Confirmed signal (buy yesterday too) ──────────────────────
@@ -1132,7 +1132,7 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["MACD"]       = e12 - e26
     d["MACD_Sig"]   = d["MACD"].ewm(span=9, adjust=False).mean()
     d["MACD_H"]     = d["MACD"] - d["MACD_Sig"]
-    d["MACD_H_Med"] = d["MACD_H"].rolling(50).median()  # 強動能篩選基準
+    d["MACD_H_Med"] = d["MACD_H"].rolling(50).quantile(0.6)  # 60th pct：Grid Search 最優
 
     # ADX-14 (vectorized)
     tr = pd.concat([
@@ -1176,11 +1176,11 @@ def _bt_is_buy(row) -> bool:
         return (
             row["Close"]    > row["MA20"]          and
             row["Volume"]   > row["VMA20"]         and
-            50 <= row["RSI14"] <= 60               and  # 收緊：50-60 (原 40-75)
+            52 <= row["RSI14"] <= 60               and  # Grid Search BEST：52-60
             -8 <= row["Bias"]  <= 8                and
             row["MACD"]     > row["MACD_Sig"]      and
-            row["MACD_H"]   > row["MACD_H_Med"]    and  # 新增：強動能 > 50日中位數
-            20 <= row["ADX14"] <= 30               and  # 上限 30：ADX>30 反而勝率33%
+            row["MACD_H"]   > row["MACD_H_Med"]    and  # MACD_H ≥60th pct
+            18 <= row["ADX14"] <= 30               and  # Grid Search BEST：18-30
             row["OBV"]      > row["OBV_MA20"]      and
             bool(row["monthly_trend"])              and
             not bool(row["is_extended"])
@@ -1576,7 +1576,7 @@ async def backtest_gridsearch(request: BacktestFullRequest):
     results.sort(key=lambda x: (x["sharpe"] or -99), reverse=True)
 
     # Mark which rank the current live params achieve
-    current = {"rsi_lo": 50, "rsi_hi": 60, "adx_lo": 20, "adx_hi": 30, "macd_h_pct_min": 50}
+    current = {"rsi_lo": 52, "rsi_hi": 60, "adx_lo": 18, "adx_hi": 30, "macd_h_pct_min": 60}
     current_rank = next(
         (i + 1 for i, r in enumerate(results) if r["params"] == current), None
     )
