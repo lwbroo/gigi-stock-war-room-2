@@ -863,7 +863,9 @@ async def scan_stocks(request: ScanRequest):
             _mh_med = last["MACD_H_Med"]
             macd_h_strong = (not pd.isna(_mh) and not pd.isna(_mh_med)
                              and float(_mh) > float(_mh_med))
-            is_buy = all(conds.values()) and macd_h_strong
+            # ADX 20-30：有趨勢但未過熱（ADX>30 回測勝率僅 33%）
+            adx_ok = (adx14v is not None and 20 <= adx14v <= 30)
+            is_buy = all(conds.values()) and macd_h_strong and adx_ok
 
             # ── v6: Confirmed signal (buy yesterday too) ──────────────────────
             confirmed_signal = prev_signals.get(ticker, False)
@@ -1178,7 +1180,7 @@ def _bt_is_buy(row) -> bool:
             -8 <= row["Bias"]  <= 8                and
             row["MACD"]     > row["MACD_Sig"]      and
             row["MACD_H"]   > row["MACD_H_Med"]    and  # 新增：強動能 > 50日中位數
-            row["ADX14"]    > 20                   and
+            20 <= row["ADX14"] <= 30               and  # 上限 30：ADX>30 反而勝率33%
             row["OBV"]      > row["OBV_MA20"]      and
             bool(row["monthly_trend"])              and
             not bool(row["is_extended"])
