@@ -1267,6 +1267,7 @@ def _backtest_ticker(
             "rsi14":  round(float(row["RSI14"]),  1) if not pd.isna(row["RSI14"])  else None,
             "adx14":  round(float(row["ADX14"]),  1) if not pd.isna(row["ADX14"])  else None,
             "macd_h": round(float(row["MACD_H"]), 4) if not pd.isna(row["MACD_H"]) else None,
+            "bias":   round(float(row["Bias"]),   1) if not pd.isna(row["Bias"])   else None,
         })
 
     if not signals:
@@ -1288,6 +1289,63 @@ def _backtest_ticker(
         "avg_loss":  round(float(np.mean(losses)), 2) if losses else None,
         "sharpe":    sharpe,
         "signals":   signals,
+    }
+
+
+def _analyze_signals(all_signals: list) -> dict:
+    """
+    Condition contribution analysis: bucket each signal by indicator value at
+    entry time, compare win_rate + avg_return across buckets to reveal which
+    indicator ranges actually produce better outcomes.
+    """
+    if len(all_signals) < 5:
+        return {}
+
+    def _bucket(signals, key, bins, labels):
+        out = []
+        for i, lbl in enumerate(labels):
+            lo, hi = bins[i], bins[i + 1]
+            sub = [s for s in signals
+                   if s.get(key) is not None and lo <= s[key] < hi]
+            if not sub:
+                out.append({"label": lbl, "count": 0, "win_rate": None, "avg_return": None})
+                continue
+            wins = sum(1 for s in sub if s["won"])
+            rets = [s["return_pct"] for s in sub]
+            out.append({
+                "label":      lbl,
+                "count":      len(sub),
+                "win_rate":   round(wins / len(sub), 3),
+                "avg_return": round(float(np.mean(rets)), 2),
+            })
+        return out
+
+    # MACD_H: use data-driven tertile split so it adapts to each watchlist's price scale
+    mh_vals = sorted(s["macd_h"] for s in all_signals if s.get("macd_h") is not None)
+    n = len(mh_vals)
+    if n >= 6:
+        p33 = mh_vals[n // 3]
+        p67 = mh_vals[n * 2 // 3]
+        mh_buckets = _bucket(
+            all_signals, "macd_h",
+            [-1e9, p33, p67, 1e9],
+            [f"MACD_H 弱 (≤{p33:.3f})", f"MACD_H 中 ({p33:.3f}~{p67:.3f})", f"MACD_H 強 (>{p67:.3f})"],
+        )
+    else:
+        mh_buckets = []
+
+    return {
+        "total_analyzed": len(all_signals),
+        "rsi_buckets":  _bucket(all_signals, "rsi14",
+            [40, 50, 60, 75.01],
+            ["RSI 40–50", "RSI 50–60", "RSI 60–75"]),
+        "adx_buckets":  _bucket(all_signals, "adx14",
+            [20, 25, 30, 999],
+            ["ADX 20–25 弱", "ADX 25–30 中", "ADX 30+ 強"]),
+        "bias_buckets": _bucket(all_signals, "bias",
+            [-8.01, -4, 0, 4, 8.01],
+            ["Bias -8~-4%", "Bias -4~0%", "Bias 0~+4%", "Bias +4~+8%"]),
+        "macd_h_buckets": mh_buckets,
     }
 
 
@@ -1323,22 +1381,27 @@ async def backtest_full(request: BacktestFullRequest):
         print(f"BT {code}: signals={res.get('total_signals')} "
               f"WR={res.get('win_rate')} avg={res.get('avg_return')}")
 
-    all_rets  = [s["return_pct"] for r in results for s in r.get("signals", [])]
-    total_sig = sum(r.get("total_signals", 0) for r in results)
-    avg_all   = float(np.mean(all_rets))   if all_rets else None
-    std_all   = float(np.std(all_rets))    if len(all_rets) > 1 else None
-    sharpe_all= round(avg_all / std_all * (252 / hold) ** 0.5, 2) \
-                if avg_all is not None and std_all and std_all > 0 else None
+    all_signals = [s for r in results for s in r.get("signals", [])]
+    all_rets    = [s["return_pct"] for s in all_signals]
+    total_sig   = sum(r.get("total_signals", 0) for r in results)
+    avg_all     = float(np.mean(all_rets))   if all_rets else None
+    std_all     = float(np.std(all_rets))    if len(all_rets) > 1 else None
+    sharpe_all  = round(avg_all / std_all * (252 / hold) ** 0.5, 2) \
+                  if avg_all is not None and std_all and std_all > 0 else None
 
     summary = {
         "total_signals": total_sig,
-        "win_rate":  round(sum(1 for x in all_rets if x > 0) / len(all_rets), 3) if all_rets else None,
+        "win_rate":   round(sum(1 for x in all_rets if x > 0) / len(all_rets), 3) if all_rets else None,
         "avg_return": round(avg_all, 2) if avg_all is not None else None,
-        "sharpe":    sharpe_all,
+        "sharpe":     sharpe_all,
         "start_date": start, "end_date": end, "hold_days": hold,
     }
 
-    return {"results": results, "summary": summary}
+    return {
+        "results":            results,
+        "summary":            summary,
+        "condition_analysis": _analyze_signals(all_signals),
+    }
 
 
 @app.get("/api/forecast/{code}")
