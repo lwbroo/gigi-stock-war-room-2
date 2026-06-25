@@ -850,7 +850,7 @@ async def scan_stocks(request: ScanRequest):
                 "volume": bool(c_vol>1.2*vol_ma20),
                 "trend":  bool(ma20>ma60 and ma60>ma120),
                 "candle": bool(c_close>c_open and c_close>mid),
-                "rsi":    bool(50.0 < rsi14 <= 65.0 and rsi14 > prev_rsi),
+                "rsi":    bool(50.0 < rsi14 <= 60.0 and rsi14 > prev_rsi),
                 "bias":   bool(bias < 0.03),
             }
             sell_flags = {
@@ -1174,7 +1174,7 @@ def _bt_is_buy(row) -> bool:
         return (
             row["Close"]    > row["MA20"]          and
             row["Volume"]   > row["VMA20"]         and
-            50 <= row["RSI14"] <= 65               and  # 收緊：50-65 (原 40-75)
+            50 <= row["RSI14"] <= 60               and  # 收緊：50-60 (原 40-75)
             -8 <= row["Bias"]  <= 8                and
             row["MACD"]     > row["MACD_Sig"]      and
             row["MACD_H"]   > row["MACD_H_Med"]    and  # 新增：強動能 > 50日中位數
