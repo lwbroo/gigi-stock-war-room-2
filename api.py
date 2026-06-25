@@ -744,9 +744,10 @@ async def scan_stocks(request: ScanRequest):
             # ── MACD ─────────────────────────────────────────────────────────
             e12 = df["Close"].ewm(span=12,adjust=False).mean()
             e26 = df["Close"].ewm(span=26,adjust=False).mean()
-            df["MACD"]     = e12-e26
-            df["MACD_Sig"] = df["MACD"].ewm(span=9,adjust=False).mean()
-            df["MACD_H"]   = df["MACD"]-df["MACD_Sig"]
+            df["MACD"]       = e12-e26
+            df["MACD_Sig"]   = df["MACD"].ewm(span=9,adjust=False).mean()
+            df["MACD_H"]     = df["MACD"]-df["MACD_Sig"]
+            df["MACD_H_Med"] = df["MACD_H"].rolling(50).median()  # 50日中位數：強動能篩選
 
             # ── ADX-14 ───────────────────────────────────────────────────────
             df["TR"]  = df[[(df["High"]-df["Low"]),(df["High"]-df["Close"].shift(1)).abs(),(df["Low"]-df["Close"].shift(1)).abs()]].max(axis=1) if False else \
@@ -849,15 +850,20 @@ async def scan_stocks(request: ScanRequest):
                 "volume": bool(c_vol>1.2*vol_ma20),
                 "trend":  bool(ma20>ma60 and ma60>ma120),
                 "candle": bool(c_close>c_open and c_close>mid),
-                "rsi":    bool(60.0<rsi14<70.0 and rsi14>prev_rsi),
-                "bias":   bool(bias<0.03),
+                "rsi":    bool(50.0 < rsi14 <= 65.0 and rsi14 > prev_rsi),
+                "bias":   bool(bias < 0.03),
             }
             sell_flags = {
-                "is_trend_broken":       bool(c_close<ma20),
-                "is_momentum_lost":      bool(rsi14<50.0),
-                "is_heavy_distribution": bool(c_close<c_open and c_vol>vol_ma20),
+                "is_trend_broken":       bool(c_close < ma20),
+                "is_momentum_lost":      bool(rsi14 < 50.0),
+                "is_heavy_distribution": bool(c_close < c_open and c_vol > vol_ma20),
             }
-            is_buy = all(conds.values())
+            # MACD_H 強動能：當前值須高於自身 50 日中位數
+            _mh     = last["MACD_H"]
+            _mh_med = last["MACD_H_Med"]
+            macd_h_strong = (not pd.isna(_mh) and not pd.isna(_mh_med)
+                             and float(_mh) > float(_mh_med))
+            is_buy = all(conds.values()) and macd_h_strong
 
             # ── v6: Confirmed signal (buy yesterday too) ──────────────────────
             confirmed_signal = prev_signals.get(ticker, False)
@@ -1121,9 +1127,10 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # MACD 12/26/9
     e12 = d["Close"].ewm(span=12, adjust=False).mean()
     e26 = d["Close"].ewm(span=26, adjust=False).mean()
-    d["MACD"]     = e12 - e26
-    d["MACD_Sig"] = d["MACD"].ewm(span=9, adjust=False).mean()
-    d["MACD_H"]   = d["MACD"] - d["MACD_Sig"]
+    d["MACD"]       = e12 - e26
+    d["MACD_Sig"]   = d["MACD"].ewm(span=9, adjust=False).mean()
+    d["MACD_H"]     = d["MACD"] - d["MACD_Sig"]
+    d["MACD_H_Med"] = d["MACD_H"].rolling(50).median()  # 強動能篩選基準
 
     # ADX-14 (vectorized)
     tr = pd.concat([
@@ -1159,20 +1166,21 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _bt_is_buy(row) -> bool:
-    """Apply core signal logic to one row of computed indicators."""
+    """Apply core signal logic to one row of computed indicators (v6.5 params)."""
     try:
-        for col in ["MA20", "VMA20", "RSI14", "Bias", "MACD", "MACD_Sig", "ADX14"]:
+        for col in ["MA20", "VMA20", "RSI14", "Bias", "MACD", "MACD_Sig", "ADX14", "MACD_H_Med"]:
             if pd.isna(row[col]):
                 return False
         return (
-            row["Close"]    > row["MA20"]      and
-            row["Volume"]   > row["VMA20"]     and
-            40 <= row["RSI14"] <= 75           and
-            -8 <= row["Bias"]  <= 8            and
-            row["MACD"]     > row["MACD_Sig"]  and
-            row["ADX14"]    > 20               and
-            row["OBV"]      > row["OBV_MA20"]  and
-            bool(row["monthly_trend"])          and
+            row["Close"]    > row["MA20"]          and
+            row["Volume"]   > row["VMA20"]         and
+            50 <= row["RSI14"] <= 65               and  # 收緊：50-65 (原 40-75)
+            -8 <= row["Bias"]  <= 8                and
+            row["MACD"]     > row["MACD_Sig"]      and
+            row["MACD_H"]   > row["MACD_H_Med"]    and  # 新增：強動能 > 50日中位數
+            row["ADX14"]    > 20                   and
+            row["OBV"]      > row["OBV_MA20"]      and
+            bool(row["monthly_trend"])              and
             not bool(row["is_extended"])
         )
     except Exception:
