@@ -97,7 +97,7 @@
 
     /* ── Market Tabs ── */
     .market-tabs {
-      display: flex; gap: 4px; margin-bottom: 20px;
+      display: flex; gap: 4px; margin-bottom: 8px;
       background: var(--bg-1); border: 1px solid var(--border);
       border-radius: 12px; padding: 5px;
     }
@@ -1202,6 +1202,18 @@
             </div>
           </div>
 
+          {/* Market tabs — top-level, affects all sub-tabs */}
+          <div className="market-tabs">
+            {Object.entries(MARKETS).map(([mkt,m]) => {
+              const count = mkt==='tw' ? twTickers.length : usTickers.length;
+              return (
+                <button key={mkt} className={`market-tab ${mkt} ${market===mkt?'active':''}`} onClick={() => { if(mkt!==market){setMarket(mkt);setSyncStatus('idle');} }}>
+                  <span className="tab-flag">{m.flag}</span>{m.label}<span className="tab-count">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* App Nav */}
           <div className="app-nav">
             {[
@@ -1276,18 +1288,6 @@
                 <div className="stat-card"><div className="stat-val sv-total">{lastData.length}</div><div className="stat-lbl">Scanned</div></div>
               </div>
             )}
-
-            {/* Market tabs */}
-            <div className="market-tabs">
-              {Object.entries(MARKETS).map(([mkt,m]) => {
-                const count = mkt==='tw' ? twTickers.length : usTickers.length;
-                return (
-                  <button key={mkt} className={`market-tab ${mkt} ${market===mkt?'active':''}`} onClick={() => { if(mkt!==market){setMarket(mkt);setSyncStatus('idle');} }}>
-                    <span className="tab-flag">{m.flag}</span>{m.label}<span className="tab-count">{count}</span>
-                  </button>
-                );
-              })}
-            </div>
 
             {/* Watchlist */}
             <div className="card">
