@@ -1261,7 +1261,7 @@
               <div className="logo">📈</div>
               <div>
                 <div className="header-title">Gigi Stock War Room</div>
-                <div className="header-sub">Professional Stock Scanner · v6.5</div>
+                <div className="header-sub">Professional Stock Scanner · v7.0</div>
               </div>
             </div>
             <div className="header-right">
@@ -1718,35 +1718,51 @@
             <div className="card" style={{marginTop:4}}>
               <div className="collapse-header" onClick={() => setShowGuide(v=>!v)}>
                 <span style={{fontSize:13,fontWeight:600,color:'var(--text-secondary)'}}>ℹ️ App Guide</span>
-                <span style={{fontSize:11,fontWeight:700,padding:'1px 7px',borderRadius:4,background:'rgba(88,166,255,0.15)',color:'var(--accent)'}}>v6.5</span>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v7.0</span>
                 <span style={{fontSize:11,color:'var(--text-muted)'}}>功能總覽</span>
                 <span className={`collapse-chevron ${showGuide?'open':''}`}>▶</span>
               </div>
               {showGuide && (
-                <div className="feature-grid">
+                <div style={{marginTop:16}}>
+                  {/* v7.0 highlight */}
+                  <div style={{background:'linear-gradient(135deg,rgba(99,102,241,0.1),rgba(129,140,248,0.06))',border:'1px solid rgba(129,140,248,0.2)',borderRadius:12,padding:'12px 16px',marginBottom:14,display:'flex',gap:12,alignItems:'flex-start'}}>
+                    <span style={{fontSize:22,flexShrink:0}}>✨</span>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:13,color:'var(--accent)',marginBottom:4}}>v7.0 新功能 — Grok AI 市場情緒 + Premium UI</div>
+                      <div style={{fontSize:12,color:'var(--text-secondary)',lineHeight:1.7}}>
+                        每日自動分析市場新聞，由 Grok AI 輸出情緒分數（-1.0 極悲觀 ↔ +1.0 極樂觀），自動融入個股綜合評分。
+                        同步完成 Premium Dark Glass UI 全面升級 — 玻璃擬態卡片、漸層邊框、Inter 字體。
+                      </div>
+                    </div>
+                  </div>
+                  <div className="feature-grid">
                   {[
-                    {icon:'📋',title:'Watchlist',      desc:'Add / remove tickers per market. Saved instantly to your browser and synced to Google Sheets.'},
-                    {icon:'🔍',title:'Scanner',         desc:'15-factor professional signal: MA20, Volume, RSI, Bias, MACD, ADX, OBV, 週線, 月線, 突破, 量擴, 外資, 法人, 大盤環境.'},
-                    {icon:'💡',title:'綜合評分',         desc:'🚀強力買進(90+) / 🟢積極(65+) / 🔵觀望(35+) / ⚠️減碼(10+) / 🔴賣出(<10)。整合15項指標自動評分。'},
-                    {icon:'📊',title:'v6.0 歷史回測',   desc:'從 FinMind 抓2年真實日線，在每一天重跑訊號邏輯，統計歷史勝率、Sharpe、平均報酬。非模擬，是真實重播。'},
-                    {icon:'🧮',title:'v6.0 EPS預測',    desc:'8步模型：今年YTD營收成長率×去年全年×TTM淨利率÷股本=預測EPS。再用3年平均配息率推算預測股息。'},
-                    {icon:'🧠',title:'v6.0 回歸模型',   desc:'每次掃描自動記錄12個指標。20天後訓練OLS回歸，系統自動學習哪個指標最有預測力，越掃越準。'},
-                    {icon:'📈',title:'Live Charts',     desc:'點任意 Ticker 的 📈 開啟 TradingView 即時圖表。'},
-                    {icon:'💼',title:'Portfolio',       desc:'記錄持倉成本，即時對照掃描價格計算 P&L % 和 P&L $。'},
-                    {icon:'🔔',title:'Price Alerts',    desc:'設定目標價 — 掃描時自動偵測並 LINE Notify 推送。'},
-                    {icon:'🕛',title:'Auto-scan',       desc:'每天午夜 12:00 自動重新掃描兩個市場，隔天一開機就有最新訊號。'},
-                    {icon:'✅',title:'連續確認',         desc:'訊號連續2天出現才算高可信度（+25分）。掃描表格「確認」欄 ✅ = 強訊號。'},
-                    {icon:'🏦',title:'外資/投信',        desc:'外資買超>1000張=+15分。投信買超=+8分。法人動向是台股最強領先指標。'},
-                    {icon:'📐',title:'52W 高低 + RS',    desc:'距52週高點% + 個股20日漲幅 vs 大盤指數相對強度。'},
-                    {icon:'🕯️',title:'K線形態',          desc:'自動辨識紅三兵/黑三兵/吞噬/錘子/射擊之星/十字星。'},
-                    {icon:'🔥',title:'族群熱度',         desc:'Scanner 結果自動統計各產業板塊買訊號比率，一眼看出強勢板塊。'},
-                    {icon:'🛑',title:'停損 / 目標',       desc:'自動計算：停損 = MA20×0.97，目標 = 現價×1.15。'},
+                    {icon:'🧠',title:'v7.0 Grok AI 情緒',  desc:'每日自動爬市場新聞→Grok打分(-1.0~+1.0)。偏樂觀+5/+10分，偏悲觀-8/-15分，情緒條顯示在頁面頂部。', new:true},
+                    {icon:'🌍',title:'v7.0 頂層市場切換',   desc:'台股/美股切換移至最上方，一鍵影響 Scanner、Portfolio、Backtest 所有分頁，不再需要每個頁面分別切換。', new:true},
+                    {icon:'🔬',title:'v7.0 美股回測優化',   desc:'Grid Search 找出美股最佳參數：RSI 60-65（動能更強）/ ADX 18-30 / Bias 4-8%。回測78%勝率，Sharpe 2.09。', new:true},
+                    {icon:'📋',title:'Watchlist',            desc:'Add / remove tickers per market. Saved instantly to your browser and synced to Google Sheets.'},
+                    {icon:'🔍',title:'Scanner',              desc:'15-factor professional signal: MA20, Volume, RSI, Bias, MACD, ADX, OBV, 週線, 月線, 突破, 量擴, 外資, 法人, 大盤環境.'},
+                    {icon:'💡',title:'綜合評分',              desc:'🚀強力買進(90+) / 🟢積極(65+) / 🔵觀望(35+) / ⚠️減碼(10+) / 🔴賣出(<10)。整合15項指標 + Grok情緒自動評分。'},
+                    {icon:'📊',title:'歷史回測',              desc:'從 FinMind 抓2年真實日線，每天重跑訊號邏輯，統計歷史勝率、Sharpe、平均報酬。台股94.1%/美股78%勝率已驗證。'},
+                    {icon:'🔭',title:'Grid Search',          desc:'自動測試 9000+ 組 RSI×ADX×MACD_H×Bias 參數組合，找出 Sharpe 最高的最優設定，分台股/美股獨立優化。'},
+                    {icon:'🧮',title:'EPS 預測',             desc:'8步模型：YTD營收成長率×去年全年×TTM淨利率÷股本=預測EPS。再用3年平均配息率推算預測股息。'},
+                    {icon:'🧠',title:'自適應回歸模型',        desc:'每次掃描自動記錄12個指標。20天後訓練OLS回歸，系統自動學習哪個指標最有預測力，越掃越準。'},
+                    {icon:'📈',title:'Live Charts',          desc:'點任意 Ticker 的 📈 開啟 TradingView 即時圖表，確認技術位置。'},
+                    {icon:'💼',title:'Portfolio',            desc:'記錄持倉成本，即時對照掃描價格計算 P&L % 和 P&L $。'},
+                    {icon:'🔔',title:'Price Alerts',         desc:'設定目標價 — 掃描時自動偵測並 LINE Notify 推送。'},
+                    {icon:'🕛',title:'Auto-scan',            desc:'每天午夜 12:00 自動重新掃描兩個市場，隔天一開機就有最新訊號。'},
+                    {icon:'🏦',title:'外資/投信',             desc:'外資買超>1000張=+15分。投信買超=+8分。法人動向是台股最強領先指標。'},
+                    {icon:'🛑',title:'停損 / 目標',           desc:'Hover 個股的「綜合評論」欄自動顯示：停損=MA20×0.97，目標=現價×1.15，風險報酬比。'},
                   ].map(f => (
-                    <div key={f.title} className="feature-tile">
+                    <div key={f.title} className="feature-tile" style={f.new?{borderColor:'rgba(129,140,248,0.25)',background:'rgba(129,140,248,0.05)'}:{}}>
                       <div className="feature-icon">{f.icon}</div>
-                      <div><div className="feature-title">{f.title}</div><div className="feature-desc">{f.desc}</div></div>
+                      <div>
+                        <div className="feature-title">{f.title}{f.new && <span style={{marginLeft:6,fontSize:9,fontWeight:800,padding:'1px 5px',borderRadius:3,background:'rgba(129,140,248,0.2)',color:'var(--accent)',verticalAlign:'middle'}}>NEW</span>}</div>
+                        <div className="feature-desc">{f.desc}</div>
+                      </div>
                     </div>
                   ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -2441,13 +2457,22 @@
             <div className="card" style={{marginTop:8}}>
               <div className="collapse-header" onClick={() => setShowChangelog(v=>!v)}>
                 <span style={{fontSize:13,fontWeight:600,color:'var(--text-secondary)'}}>📋 Changelog</span>
-                <span style={{fontSize:11,fontWeight:700,padding:'1px 7px',borderRadius:4,background:'rgba(88,166,255,0.15)',color:'var(--accent)'}}>v6.5</span>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v7.0</span>
                 <span className={`collapse-chevron ${showChangelog?'open':''}`}>▶</span>
               </div>
               {showChangelog && (
                 <div className="changelog-list">
                   {[
-                    { v:'v6.0', date:'2026-06-23', current:true, items:[
+                    { v:'v7.0', date:'2026-06-27', current:true, items:[
+                      '🧠 Grok AI 市場情緒 — 每日爬市場新聞→AI評分(-1.0~+1.0)，情緒條顯示在頁面頂部，自動融入個股綜合評分',
+                      '⬆️ 偏樂觀(≥+0.2): +5分 / 極樂觀(≥+0.5): +10分 / 偏悲觀(≤-0.2): -8分 / 極悲觀(≤-0.5): -15分',
+                      '🌍 台股/美股切換移至最頂層 — 一鍵切換影響 Scanner、Portfolio、Backtest 所有分頁',
+                      '🔬 美股 Grid Search 完成 — RSI 60-65 / ADX 18-30 / Bias 4-8%，78%勝率 Sharpe 2.09（vs 台股 94.1% Sharpe 4.43）',
+                      '📈 回測股票上限 20→60 支，支援更大的 US watchlist 選股池',
+                      '🎨 Premium Dark Glass UI — 深黑背景、玻璃擬態卡片、漸層邊框、Inter 字體全面升級',
+                      '↻ Sentiment 手動刷新按鈕 — 點 ↻ 可強制重新分析（每日自動快取，不重複打 API）',
+                    ]},
+                    { v:'v6.5', date:'2026-06-25', current:false, items:[
                       '✅ 連續2天確認機制 — 訊號需連續2日出現才算真正確認，大幅減少假訊號',
                       '⚠️ 延伸股過濾 — 5日漲幅 >5% 自動降分，避免追高',
                       '📅 財報風險提示 — 7天內有財報自動標示警告並降分',
@@ -2456,7 +2481,7 @@
                       '📈 大盤週漲跌過濾 — 大盤本週下跌時所有股票降分',
                       '🎯 綜合評分門檻調高：🚀需90分，更嚴格，更精準',
                     ]},
-                    { v:'v6.5', date:'2026-06-25', current:true, items:[
+                    { v:'v6.5', date:'2026-06-25', items:[
                       '🔒 凍結欄位 — Ticker & Company 永遠固定在左側，右滑不跑版',
                       '📌 固定表頭 — 向下捲動時欄位標題持續顯示在頂部',
                       '🦓 斑馬條紋 — 偶數列淡色底，大量結果時更容易循橫列對齊',
