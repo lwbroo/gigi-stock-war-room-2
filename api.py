@@ -1499,7 +1499,7 @@ async def backtest_full(request: BacktestFullRequest):
     hold  = max(1, min(int(request.hold_days), 60))
 
     results = []
-    for ticker in request.tickers[:20]:
+    for ticker in request.tickers[:60]:
         code = ticker.split(".")[0] if request.market == "tw" else ticker
         name = get_company_name(ticker)
         res  = _backtest_ticker(code, start, end, hold, company_name=name, market=request.market)
@@ -1548,7 +1548,7 @@ async def backtest_gridsearch(request: BacktestFullRequest):
 
     # ── Step 1: collect candidate signals ──────────────────────────────────
     all_signals: list = []
-    for ticker in request.tickers[:20]:
+    for ticker in request.tickers[:60]:
         code = ticker.split(".")[0] if request.market == "tw" else ticker
         name = get_company_name(ticker)
         sigs = _collect_wide_signals(code, start, end, hold, company_name=name, market=request.market)
