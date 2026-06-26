@@ -1176,11 +1176,11 @@ TW_BEST_PARAMS: dict = {
     "adx_lo": 18,  "adx_hi": 35,
     "macd_h_pct_min": 60,
 }
-US_DEFAULT_PARAMS: dict = {   # placeholder — run Grid Search to optimise
-    "rsi_lo": 45, "rsi_hi": 75,
-    "bias_lo": 0,  "bias_hi": 15,
-    "adx_lo": 15,  "adx_hi": 45,
-    "macd_h_pct_min": 40,
+US_DEFAULT_PARAMS: dict = {   # Grid Search BEST: RSI 60-65, ADX 18-30, MACD_H ≥60%, Bias 4-8%
+    "rsi_lo": 60, "rsi_hi": 65,
+    "bias_lo": 4,  "bias_hi": 8,
+    "adx_lo": 18,  "adx_hi": 30,
+    "macd_h_pct_min": 60,
 }
 
 def _get_market_params(market: str) -> dict:
