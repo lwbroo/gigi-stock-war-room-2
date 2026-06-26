@@ -343,9 +343,35 @@
     .weekly-down { color: var(--red);     font-size: 11px; font-weight: 700; }
     .weekly-na   { color: var(--text-muted); font-size: 11px; }
 
-    .overall-cell { display: flex; flex-direction: column; gap: 3px; min-width: 120px; }
+    .overall-cell { display: flex; flex-direction: column; gap: 3px; min-width: 120px; cursor: pointer; }
     .overall-label { font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 5px; white-space: nowrap; display: inline-block; }
     .overall-reasons { font-size: 10px; color: var(--text-muted); line-height: 1.4; }
+
+    /* ── Stock detail tooltip ── */
+    .stock-tooltip {
+      position: fixed; z-index: 9999; pointer-events: none;
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 12px; padding: 14px 16px;
+      min-width: 320px; max-width: 400px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.7);
+      font-size: 12px; color: var(--text-secondary);
+    }
+    .tt-title { font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+    .tt-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid #21262d; }
+    .tt-section-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 6px; }
+    .tt-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+    .tt-kv { background: #0d1117; border-radius: 6px; padding: 5px 8px; }
+    .tt-k { font-size: 9px; color: var(--text-muted); text-transform: uppercase; }
+    .tt-v { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-top: 1px; }
+    .tt-conds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .tt-cond { display: flex; align-items: center; gap: 5px; font-size: 11px; padding: 3px 0; }
+    .tt-cond-pass { color: var(--green); }
+    .tt-cond-fail { color: var(--red); }
+    .tt-score-list { display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; }
+    .tt-score-row { display: flex; justify-content: space-between; align-items: center; font-size: 11px; padding: 2px 0; }
+    .tt-pts-pos { color: var(--green); font-weight: 700; font-family: monospace; }
+    .tt-pts-neg { color: var(--red); font-weight: 700; font-family: monospace; }
+    .tt-total { display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-weight: 700; font-size: 13px; }
 
     .toggle-ext { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 9px; font-size: 11px; color: var(--text-muted); cursor: pointer; transition: all 0.15s; }
     .toggle-ext:hover { border-color: var(--accent); color: var(--accent); }
@@ -536,104 +562,108 @@
       const sf = row.sell_flags || {};
       let score = 0;
       const reasons = [];
+      const allDetails = [];
+      const d = (text, pts) => { allDetails.push({text, pts}); };
 
       // ── Sell flags ──
-      if (sf.is_trend_broken)       { score -= 20; reasons.push('跌破MA20'); }
-      if (sf.is_momentum_lost)      { score -= 15; reasons.push('RSI<50'); }
-      if (sf.is_heavy_distribution) { score -= 15; reasons.push('量大收黑'); }
+      if (sf.is_trend_broken)       { score -= 20; reasons.push('跌破MA20');   d('跌破MA20', -20); }
+      if (sf.is_momentum_lost)      { score -= 15; reasons.push('RSI<50');     d('RSI<50', -15); }
+      if (sf.is_heavy_distribution) { score -= 15; reasons.push('量大收黑');   d('量大收黑', -15); }
 
-      // ── v6: 股票已延伸 (過去5日漲>5%) ──
-      if (row.is_extended)          { score -= 15; reasons.push('5日已漲5%+慎追'); }
+      // ── v6: 股票已延伸 ──
+      if (row.is_extended)          { score -= 15; reasons.push('5日已漲5%+慎追'); d('5日已漲5%+慎追', -15); }
 
       // ── v6: 財報即將 ──
-      if (row.near_earnings)        { score -= 12; reasons.push('財報即將風險'); }
+      if (row.near_earnings)        { score -= 12; reasons.push('財報即將風險'); d('財報即將風險', -12); }
 
-      // ── v6: 連續確認訊號 (2天) ──
-      if (row.confirmed_signal)     { score += 25; reasons.push('✅連續確認'); }
+      // ── v6: 連續確認訊號 ──
+      if (row.confirmed_signal)     { score += 25; reasons.push('✅連續確認'); d('連續確認訊號(2日)', +25); }
 
       // ── 6 buy conditions ──
       const gc = conds ? Object.values(conds).filter(Boolean).length : 0;
       score += gc * 7;
+      if (gc > 0) d(`買進條件 ${gc}/6 個通過`, gc * 7);
 
       // ── MACD ──
-      if (row.macd_cross === 'golden')     { score += 18; reasons.push('MACD黃金交叉'); }
-      else if (row.macd_cross === 'above') { score += 6; }
-      else if (row.macd_cross === 'death') { score -= 18; reasons.push('MACD死亡交叉'); }
-      else if (row.macd_cross === 'below') { score -= 6; }
+      if (row.macd_cross === 'golden')     { score += 18; reasons.push('MACD黃金交叉'); d('MACD黃金交叉', +18); }
+      else if (row.macd_cross === 'above') { score += 6;  d('MACD多頭', +6); }
+      else if (row.macd_cross === 'death') { score -= 18; reasons.push('MACD死亡交叉'); d('MACD死亡交叉', -18); }
+      else if (row.macd_cross === 'below') { score -= 6;  d('MACD空頭', -6); }
 
       // ── ADX ──
       if (row.adx14 != null) {
-        if (row.adx14 > 30)      { score += 12; reasons.push(`ADX強(${row.adx14.toFixed(0)})`); }
-        else if (row.adx14 > 25) { score += 7; }
-        else if (row.adx14 < 20) { score -= 5;  reasons.push('ADX盤整'); }
+        if (row.adx14 > 30)      { score += 12; reasons.push(`ADX強(${row.adx14.toFixed(0)})`); d(`ADX強勢(${row.adx14.toFixed(0)})`, +12); }
+        else if (row.adx14 > 25) { score += 7;  d(`ADX中等(${row.adx14.toFixed(0)})`, +7); }
+        else if (row.adx14 < 20) { score -= 5;  reasons.push('ADX盤整'); d(`ADX偏弱(${row.adx14.toFixed(0)})`, -5); }
+        else                     { d(`ADX中性(${row.adx14.toFixed(0)})`, 0); }
       }
 
       // ── OBV ──
-      if (row.obv_trend === 'rising')  { score += 8;  reasons.push('OBV吸籌'); }
-      if (row.obv_trend === 'falling') { score -= 8;  reasons.push('OBV出貨'); }
+      if (row.obv_trend === 'rising')  { score += 8;  reasons.push('OBV吸籌'); d('OBV上升(吸籌)', +8); }
+      if (row.obv_trend === 'falling') { score -= 8;  reasons.push('OBV出貨'); d('OBV下降(出貨)', -8); }
 
       // ── Monthly trend ──
-      if (row.monthly_trend === true)  { score += 8;  reasons.push('月線多頭'); }
-      if (row.monthly_trend === false) { score -= 8;  reasons.push('月線空頭'); }
+      if (row.monthly_trend === true)  { score += 8;  reasons.push('月線多頭'); d('月線多頭排列', +8); }
+      if (row.monthly_trend === false) { score -= 8;  reasons.push('月線空頭'); d('月線空頭排列', -8); }
 
       // ── Breakout ──
-      if (row.is_breakout20) { score += 12; reasons.push('突破20日高點'); }
+      if (row.is_breakout20) { score += 12; reasons.push('突破20日高點'); d('突破20日新高', +12); }
 
       // ── Volume expansion ──
-      if (row.vol_expansion) { score += 7;  reasons.push('量能持續放大'); }
+      if (row.vol_expansion) { score += 7; reasons.push('量能持續放大'); d('量能持續放大(3日)', +7); }
 
       // ── Institutional ──
       if (row.inst_foreign != null) {
-        if (row.inst_foreign > 1000)       { score += 15; reasons.push(`外資大買`); }
-        else if (row.inst_foreign > 0)     { score += 7;  reasons.push('外資買超'); }
-        else if (row.inst_foreign < -1000) { score -= 12; reasons.push('外資大賣'); }
-        else if (row.inst_foreign < 0)     { score -= 5;  reasons.push('外資賣超'); }
+        if (row.inst_foreign > 1000)       { score += 15; reasons.push('外資大買'); d(`外資大買 +${row.inst_foreign}張`, +15); }
+        else if (row.inst_foreign > 0)     { score += 7;  reasons.push('外資買超'); d(`外資買超 +${row.inst_foreign}張`, +7); }
+        else if (row.inst_foreign < -1000) { score -= 12; reasons.push('外資大賣'); d(`外資大賣 ${row.inst_foreign}張`, -12); }
+        else if (row.inst_foreign < 0)     { score -= 5;  reasons.push('外資賣超'); d(`外資賣超 ${row.inst_foreign}張`, -5); }
       }
       if (row.inst_trust != null) {
-        if (row.inst_trust > 500)  { score += 8; reasons.push('投信買超'); }
-        else if (row.inst_trust < -500) { score -= 6; reasons.push('投信賣超'); }
+        if (row.inst_trust > 500)       { score += 8; reasons.push('投信買超'); d(`投信買超 +${row.inst_trust}張`, +8); }
+        else if (row.inst_trust < -500) { score -= 6; reasons.push('投信賣超'); d(`投信賣超 ${row.inst_trust}張`, -6); }
       }
 
-      // ── v6: 大盤本週上漲 ──
-      if (row.market_week_rising === true)  { score += 8;  reasons.push('大盤週漲'); }
-      if (row.market_week_rising === false) { score -= 8;  reasons.push('大盤週跌'); }
-      if (row.market_regime_bull === false) { score -= 5;  reasons.push('大盤空頭'); }
+      // ── 大盤 ──
+      if (row.market_week_rising === true)  { score += 8; reasons.push('大盤週漲'); d('大盤本週上漲', +8); }
+      if (row.market_week_rising === false) { score -= 8; reasons.push('大盤週跌'); d('大盤本週下跌', -8); }
+      if (row.market_regime_bull === false) { score -= 5; reasons.push('大盤空頭'); d('大盤空頭環境', -5); }
 
-      // ── v6: EPS 成長 ──
+      // ── EPS ──
       if (row.eps_growth != null) {
-        if (row.eps_growth > 20)      { score += 15; reasons.push(`EPS+${row.eps_growth.toFixed(0)}%`); }
-        else if (row.eps_growth > 0)  { score += 8;  reasons.push('EPS正成長'); }
-        else if (row.eps_growth < -10){ score -= 10; reasons.push('EPS衰退'); }
+        if (row.eps_growth > 20)       { score += 15; reasons.push(`EPS+${row.eps_growth.toFixed(0)}%`); d(`EPS成長 +${row.eps_growth.toFixed(0)}%`, +15); }
+        else if (row.eps_growth > 0)   { score += 8;  reasons.push('EPS正成長'); d(`EPS正成長 +${row.eps_growth.toFixed(0)}%`, +8); }
+        else if (row.eps_growth < -10) { score -= 10; reasons.push('EPS衰退'); d(`EPS衰退 ${row.eps_growth.toFixed(0)}%`, -10); }
       }
 
-      // ── v6: 營收成長 ──
+      // ── 營收 ──
       if (row.revenue_growth != null) {
-        if (row.revenue_growth > 10) { score += 8; reasons.push(`營收+${row.revenue_growth.toFixed(0)}%`); }
-        else if (row.revenue_growth < 0) { score -= 5; reasons.push('營收下滑'); }
+        if (row.revenue_growth > 10)  { score += 8; reasons.push(`營收+${row.revenue_growth.toFixed(0)}%`); d(`月營收成長 +${row.revenue_growth.toFixed(0)}%`, +8); }
+        else if (row.revenue_growth < 0) { score -= 5; reasons.push('營收下滑'); d(`月營收下滑 ${row.revenue_growth.toFixed(0)}%`, -5); }
       }
 
       // ── RS ──
       if (row.rs_score != null) {
-        if (row.rs_score > 1.5)      { score += 10; reasons.push('RS強勢'); }
-        else if (row.rs_score > 1.2) { score += 6; }
-        else if (row.rs_score < 0.5) { score -= 8;  reasons.push('RS弱'); }
+        if (row.rs_score > 1.5)      { score += 10; reasons.push('RS強勢'); d(`RS強勢(${row.rs_score.toFixed(2)})`, +10); }
+        else if (row.rs_score > 1.2) { score += 6;  d(`RS偏強(${row.rs_score.toFixed(2)})`, +6); }
+        else if (row.rs_score < 0.5) { score -= 8;  reasons.push('RS弱'); d(`RS弱勢(${row.rs_score.toFixed(2)})`, -8); }
       }
 
       // ── Weekly trend ──
-      if (row.weekly_trend === true)  { score += 6; reasons.push('週線多頭'); }
-      if (row.weekly_trend === false) { score -= 6; reasons.push('週線空頭'); }
+      if (row.weekly_trend === true)  { score += 6; reasons.push('週線多頭'); d('週線多頭', +6); }
+      if (row.weekly_trend === false) { score -= 6; reasons.push('週線空頭'); d('週線空頭', -6); }
 
       // ── Pattern ──
       const bullPats = ['紅三兵','多頭吞噬','錘子線'];
       const bearPats = ['黑三兵','空頭吞噬','射擊之星'];
-      if (row.pattern && bullPats.includes(row.pattern)) { score += 8;  reasons.push(row.pattern); }
-      if (row.pattern && bearPats.includes(row.pattern)) { score -= 10; reasons.push(row.pattern); }
+      if (row.pattern && bullPats.includes(row.pattern)) { score += 8;  reasons.push(row.pattern); d(`K線：${row.pattern}`, +8); }
+      if (row.pattern && bearPats.includes(row.pattern)) { score -= 10; reasons.push(row.pattern); d(`K線：${row.pattern}`, -10); }
 
       // ── 52-week ──
       if (row.pct_from_52high != null) {
-        if (row.pct_from_52high > -5)       { score += 6; reasons.push('逼近年高'); }
-        else if (row.pct_from_52high > -15) { score += 3; }
-        else if (row.pct_from_52high < -40) { score -= 5; }
+        if (row.pct_from_52high > -5)       { score += 6; reasons.push('逼近年高'); d(`距年高${row.pct_from_52high.toFixed(0)}%`, +6); }
+        else if (row.pct_from_52high > -15) { score += 3; d(`距年高${row.pct_from_52high.toFixed(0)}%`, +3); }
+        else if (row.pct_from_52high < -40) { score -= 5; d(`距年高${row.pct_from_52high.toFixed(0)}%`, -5); }
       }
 
       // ── Verdict (thresholds adjusted for v6) ──
@@ -645,7 +675,7 @@
       else                  { label = '🔴 強力賣出'; color = 'var(--red)'; bg = 'rgba(248,81,73,0.12)'; }
 
       const topReasons = reasons.slice(0, 5).join(' · ');
-      return { label, color, bg, score, reasons: topReasons };
+      return { label, color, bg, score, reasons: topReasons, allDetails, gc };
     }
 
     /* ── Pattern badge ── */
@@ -706,6 +736,7 @@
       const [gsResults,      setGsResults]      = useState(null);
       const [gsLoading,      setGsLoading]      = useState(false);
       const [gsError,        setGsError]        = useState('');
+      const [tooltip,        setTooltip]        = useState(null);
       const [btExpandedRow,  setBtExpandedRow]  = useState(null);
 
       // v5.0 regression state
@@ -1417,7 +1448,12 @@
                                       const ov = computeOverall(row, noData ? null : rowConds);
                                       if (!ov) return <span className="overall-reasons">—</span>;
                                       return (
-                                        <div className="overall-cell">
+                                        <div className="overall-cell"
+                                          onMouseEnter={(e) => {
+                                            const r = e.currentTarget.getBoundingClientRect();
+                                            setTooltip({row, conds: rowConds, ov, x: r.right + 8, y: r.top});
+                                          }}
+                                          onMouseLeave={() => setTooltip(null)}>
                                           <span className="overall-label" style={{color:ov.color, background:ov.bg}}>{ov.label}</span>
                                           {ov.reasons && <span className="overall-reasons">{ov.reasons}</span>}
                                         </div>
@@ -2488,6 +2524,84 @@
           {chartTicker && (
             <TradingViewModal ticker={chartTicker.ticker} market={chartTicker.market} onClose={() => setChartTicker(null)} />
           )}
+
+          {/* Stock Detail Tooltip */}
+          {tooltip && (() => {
+            const {row, conds, ov} = tooltip;
+            const condLabels = [
+              {key:'price',  label:'Close > MA20'},
+              {key:'volume', label:'量 > 1.2×均量'},
+              {key:'trend',  label:'月線多頭排列'},
+              {key:'candle', label:'陽線實體'},
+              {key:'rsi',    label:'RSI 52–60'},
+              {key:'bias',   label:'Bias 4–8%'},
+            ];
+            const isBuy = row.signal === 'YES';
+            const macdH = row.macd_h_strong != null ? (row.macd_h_strong ? '✅ ≥60th pct' : '❌ 偏弱') : '—';
+            const adxOk = row.adx14 != null ? (18 <= row.adx14 && row.adx14 <= 35 ? '✅ ' + row.adx14?.toFixed(0) : '❌ ' + row.adx14?.toFixed(0)) : '—';
+            // smart positioning — keep within viewport
+            const vpW = window.innerWidth, vpH = window.innerHeight;
+            const ttW = 380, ttH = 500;
+            let left = tooltip.x, top = tooltip.y;
+            if (left + ttW > vpW - 8) left = tooltip.x - ttW - 320;
+            if (top + ttH > vpH - 8) top = vpH - ttH - 8;
+            return (
+              <div className="stock-tooltip" style={{left, top}}>
+                <div className="tt-title">
+                  <span style={{color:ov.color}}>{ov.label}</span>
+                  <span style={{fontSize:12,color:'var(--text-muted)',fontWeight:400}}>{row.ticker?.replace('.TW','').replace('.TWO','')} {row.company}</span>
+                  <span style={{marginLeft:'auto',fontSize:11,color:'var(--text-muted)'}}>綜合分析</span>
+                </div>
+
+                {/* 基本數據 */}
+                <div className="tt-section-label">基本數據</div>
+                <div className="tt-grid">
+                  <div className="tt-kv"><div className="tt-k">收盤價</div><div className="tt-v">{row.close?.toFixed(1) ?? '—'}</div></div>
+                  <div className="tt-kv"><div className="tt-k">RSI14</div><div className="tt-v" style={{color: row.rsi14>=52&&row.rsi14<=60?'var(--green)':row.rsi14>70?'var(--red)':'inherit'}}>{row.rsi14?.toFixed(1) ?? '—'}</div></div>
+                  <div className="tt-kv"><div className="tt-k">Bias</div><div className="tt-v" style={{color: row.bias>=4&&row.bias<=8?'var(--green)':row.bias>8?'var(--red)':'inherit'}}>{row.bias?.toFixed(1) ?? '—'}%</div></div>
+                  <div className="tt-kv"><div className="tt-k">ADX14</div><div className="tt-v" style={{color: row.adx14>=18&&row.adx14<=35?'var(--green)':'var(--red)'}}>{row.adx14?.toFixed(0) ?? '—'}</div></div>
+                  <div className="tt-kv"><div className="tt-k">MACD_H</div><div className="tt-v">{macdH}</div></div>
+                  <div className="tt-kv"><div className="tt-k">訊號</div><div className="tt-v" style={{color:isBuy?'var(--green)':'var(--text-muted)'}}>{isBuy ? '▲ BUY' : '—'}</div></div>
+                </div>
+
+                {/* 買進條件 */}
+                <div className="tt-section">
+                  <div className="tt-section-label">策略買進條件 (需全部✅)</div>
+                  <div className="tt-conds">
+                    {condLabels.map(c => {
+                      const pass = conds ? conds[c.key] : null;
+                      return <div key={c.key} className={`tt-cond ${pass?'tt-cond-pass':'tt-cond-fail'}`}>
+                        {pass==null?'○':pass?'✅':'❌'} {c.label}
+                      </div>;
+                    })}
+                    <div className={`tt-cond ${row.adx14>=18&&row.adx14<=35?'tt-cond-pass':'tt-cond-fail'}`}>
+                      {row.adx14>=18&&row.adx14<=35?'✅':'❌'} ADX 18–35
+                    </div>
+                    <div className={`tt-cond ${row.macd_h_strong?'tt-cond-pass':'tt-cond-fail'}`}>
+                      {row.macd_h_strong?'✅':'❌'} MACD_H ≥60th pct
+                    </div>
+                  </div>
+                </div>
+
+                {/* 評分明細 */}
+                <div className="tt-section">
+                  <div className="tt-section-label">評分明細</div>
+                  <div className="tt-score-list">
+                    {(ov.allDetails||[]).filter(d=>d.pts!==0).map((d,i) => (
+                      <div key={i} className="tt-score-row">
+                        <span>{d.pts>0?'✅':'❌'} {d.text}</span>
+                        <span className={d.pts>0?'tt-pts-pos':'tt-pts-neg'}>{d.pts>0?'+':''}{d.pts}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="tt-total">
+                    <span style={{color:'var(--text-muted)'}}>總分</span>
+                    <span style={{color:ov.color}}>{ov.score} 分</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
         </div>
       );
