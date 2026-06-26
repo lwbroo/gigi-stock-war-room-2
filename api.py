@@ -851,7 +851,7 @@ async def scan_stocks(request: ScanRequest):
                 "trend":  bool(ma20>ma60 and ma60>ma120),
                 "candle": bool(c_close>c_open and c_close>mid),
                 "rsi":    bool(52.0 < rsi14 <= 60.0 and rsi14 > prev_rsi),
-                "bias":   bool(bias < 0.03),
+                "bias":   bool(0.04 <= bias <= 0.08),
             }
             sell_flags = {
                 "is_trend_broken":       bool(c_close < ma20),
@@ -864,7 +864,7 @@ async def scan_stocks(request: ScanRequest):
             macd_h_strong = (not pd.isna(_mh) and not pd.isna(_mh_med)
                              and float(_mh) > float(_mh_med))
             # ADX 20-30：有趨勢但未過熱（ADX>30 回測勝率僅 33%）
-            adx_ok = (adx14v is not None and 18 <= adx14v <= 30)
+            adx_ok = (adx14v is not None and 18 <= adx14v <= 35)
             is_buy = all(conds.values()) and macd_h_strong and adx_ok
 
             # ── v6: Confirmed signal (buy yesterday too) ──────────────────────
@@ -1177,10 +1177,10 @@ def _bt_is_buy(row) -> bool:
             row["Close"]    > row["MA20"]          and
             row["Volume"]   > row["VMA20"]         and
             52 <= row["RSI14"] <= 60               and  # Grid Search BEST：52-60
-            -8 <= row["Bias"]  <= 8                and
+            4  <= row["Bias"]  <= 8                and  # Grid Search BEST：Bias ≥4%
             row["MACD"]     > row["MACD_Sig"]      and
             row["MACD_H"]   > row["MACD_H_Med"]    and  # MACD_H ≥60th pct
-            18 <= row["ADX14"] <= 30               and  # Grid Search BEST：18-30
+            18 <= row["ADX14"] <= 35               and  # Grid Search BEST：18-35
             row["OBV"]      > row["OBV_MA20"]      and
             bool(row["monthly_trend"])              and
             not bool(row["is_extended"])
@@ -1579,7 +1579,7 @@ async def backtest_gridsearch(request: BacktestFullRequest):
     results.sort(key=lambda x: (x["sharpe"] or -99), reverse=True)
 
     # Mark which rank the current live params achieve
-    current = {"rsi_lo": 52, "rsi_hi": 60, "adx_lo": 18, "adx_hi": 30, "macd_h_pct_min": 60, "bias_lo": 0}
+    current = {"rsi_lo": 52, "rsi_hi": 60, "adx_lo": 18, "adx_hi": 35, "macd_h_pct_min": 60, "bias_lo": 4}
     current_rank = next(
         (i + 1 for i, r in enumerate(results) if r["params"] == current), None
     )

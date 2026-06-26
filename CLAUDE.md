@@ -36,10 +36,10 @@ cd frontend && npx vercel --prod --yes
 Close > MA20
 Volume > VMA20
 52 < RSI14 <= 60  and RSI14 > prev_RSI   # Grid Search BEST
--8% <= Bias <= 8%
+4% <= Bias <= 8%                          # Grid Search BEST：高偏離訊號更強
 MACD > MACD_Signal
 MACD_H > MACD_H.rolling(50).quantile(0.6)  # ≥60th percentile
-18 <= ADX14 <= 30
+18 <= ADX14 <= 35                         # Grid Search BEST：放寬上限
 OBV > OBV_MA20
 monthly_trend (MA20 > MA60 > MA120)
 NOT is_extended (5日漲幅 < 8%)
@@ -53,9 +53,10 @@ NOT is_extended (5日漲幅 < 8%)
 | +MACD_H ≥50th% | 89 | 55% | +2.9% | 1.09 |
 | +RSI 50-60 | 47 | 57% | +4.4% | 1.30 |
 | +ADX ≤30 | 38 | 63% | +5.7% | 1.63 |
-| Grid Search BEST | ~39 | 77% | +10.4% | 3.04 |
+| Grid Search v1 | ~39 | 77% | +10.4% | 3.04 |
+| Grid Search v2 BEST | 21 | **86%** | +12.1% | **3.73** |
 
-Grid Search 跑了 640 組參數，最優：RSI 52-60 / ADX 18-30 / MACD_H ≥60th pct
+Grid Search v2（+Bias 參數）最優：RSI 50-60 / ADX 18-35 / MACD_H ≥60% / Bias ≥4%
 
 ## API Endpoints
 
