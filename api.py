@@ -1189,12 +1189,62 @@ def _bt_is_buy(row) -> bool:
         return False
 
 
+def _fetch_ohlcv(code: str, fetch_start: str, fetch_end: str, market: str = "tw") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV as standardised DataFrame (columns: date,Open,High,Low,Close,Volume)."""
+    if market == "tw":
+        try:
+            r = requests.get(FINMIND_BASE, params={
+                "dataset": "TaiwanStockPrice", "data_id": code,
+                "start_date": fetch_start, "end_date": fetch_end,
+                "token": FINMIND_TOKEN,
+            }, timeout=30)
+            raw = r.json().get("data", []) if r.ok else []
+        except Exception:
+            return None
+        if len(raw) < 60:
+            return None
+        df = pd.DataFrame(raw)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+        for src, dst in [("open","Open"),("max","High"),("min","Low"),
+                         ("close","Close"),("Trading_Volume","Volume")]:
+            if src in df.columns:
+                df[dst] = pd.to_numeric(df[src], errors="coerce")
+    else:
+        # US stocks via yfinance
+        try:
+            ticker_sym = code if "." not in code else code
+            yf_df = yf.download(ticker_sym, start=fetch_start, end=fetch_end,
+                                auto_adjust=True, progress=False)
+            if yf_df.empty or len(yf_df) < 60:
+                return None
+            yf_df = yf_df.reset_index()
+            # yfinance returns MultiIndex columns sometimes
+            if isinstance(yf_df.columns, pd.MultiIndex):
+                yf_df.columns = [c[0] for c in yf_df.columns]
+            yf_df = yf_df.rename(columns={"Date":"date","Open":"Open","High":"High",
+                                           "Low":"Low","Close":"Close","Volume":"Volume"})
+            df = yf_df[["date","Open","High","Low","Close","Volume"]].copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date").reset_index(drop=True)
+        except Exception:
+            return None
+
+    for col in ["Open","High","Low","Close","Volume"]:
+        if col not in df.columns:
+            return None
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
+    df["Volume"] = df["Volume"].fillna(0)
+    return df
+
+
 def _backtest_ticker(
     code: str, start_date: str, end_date: str,
-    hold_days: int = 10, company_name: str = "",
+    hold_days: int = 10, company_name: str = "", market: str = "tw",
 ) -> dict:
     """
-    Single-stock backtest using FinMind TaiwanStockPrice.
+    Single-stock backtest. Uses FinMind for TW stocks, yfinance for US stocks.
     Fetches full OHLCV history, computes indicators vectorized, finds all
     signal days in [start_date, end_date], measures forward returns.
     """
@@ -1206,40 +1256,12 @@ def _backtest_ticker(
     }
 
     # Need 250-day warm-up before start, plus hold_days buffer after end
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=250)).strftime("%Y-%m-%d")
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
     fetch_end   = (datetime.strptime(end_date,   "%Y-%m-%d") + timedelta(days=hold_days + 15)).strftime("%Y-%m-%d")
 
-    try:
-        r = requests.get(FINMIND_BASE, params={
-            "dataset": "TaiwanStockPrice", "data_id": code,
-            "start_date": fetch_start, "end_date": fetch_end,
-            "token": FINMIND_TOKEN,
-        }, timeout=30)
-        raw = r.json().get("data", []) if r.ok else []
-    except Exception as e:
-        return {**base, "error": str(e)}
-
-    if len(raw) < 60:
-        return {**base, "error": f"Only {len(raw)} days available"}
-
-    # Build standardised DataFrame from FinMind field names
-    df = pd.DataFrame(raw)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-
-    # FinMind uses lowercase open/max/min/close + Trading_Volume
-    for src, dst in [("open","Open"),("max","High"),("min","Low"),
-                     ("close","Close"),("Trading_Volume","Volume")]:
-        if src in df.columns:
-            df[dst] = pd.to_numeric(df[src], errors="coerce")
-
-    for col in ["Open","High","Low","Close","Volume"]:
-        if col not in df.columns:
-            return {**base, "error": f"Missing column: {col}"}
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=["Close"]).reset_index(drop=True)
-    df["Volume"] = df["Volume"].fillna(0)
+    df = _fetch_ohlcv(code, fetch_start, fetch_end, market=market)
+    if df is None:
+        return {**base, "error": "Insufficient data"}
 
     # Compute all indicators
     df = _compute_bt_indicators(df)
@@ -1361,42 +1383,20 @@ def _analyze_signals(all_signals: list) -> dict:
 
 def _collect_wide_signals(
     code: str, start_date: str, end_date: str,
-    hold_days: int = 10, company_name: str = "",
+    hold_days: int = 10, company_name: str = "", market: str = "tw",
 ) -> list:
     """
     Collect all candidate signals passing BASE conditions only (no RSI/ADX/MACD_H filters).
     Each signal carries its indicator values so grid search can filter in memory.
     Base: Close>MA20, Vol>VMA20, MACD>Signal, OBV>OBV_MA20, monthly_trend, not extended.
+    Supports TW (FinMind) and US (yfinance).
     """
-    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=300)).strftime("%Y-%m-%d")
+    fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
     fetch_end   = (datetime.strptime(end_date,   "%Y-%m-%d") + timedelta(days=hold_days + 15)).strftime("%Y-%m-%d")
 
-    try:
-        r = requests.get(FINMIND_BASE, params={
-            "dataset": "TaiwanStockPrice", "data_id": code,
-            "start_date": fetch_start, "end_date": fetch_end,
-            "token": FINMIND_TOKEN,
-        }, timeout=30)
-        raw = r.json().get("data", []) if r.ok else []
-    except Exception:
+    df = _fetch_ohlcv(code, fetch_start, fetch_end, market=market)
+    if df is None:
         return []
-
-    if len(raw) < 60:
-        return []
-
-    df = pd.DataFrame(raw)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    for src, dst in [("open","Open"),("max","High"),("min","Low"),
-                     ("close","Close"),("Trading_Volume","Volume")]:
-        if src in df.columns:
-            df[dst] = pd.to_numeric(df[src], errors="coerce")
-    for col in ["Open","High","Low","Close","Volume"]:
-        if col not in df.columns:
-            return []
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["Close"]).reset_index(drop=True)
-    df["Volume"] = df["Volume"].fillna(0)
     df = _compute_bt_indicators(df)
 
     s_dt = pd.to_datetime(start_date)
@@ -1475,7 +1475,7 @@ async def backtest_full(request: BacktestFullRequest):
     for ticker in request.tickers[:20]:
         code = ticker.split(".")[0] if request.market == "tw" else ticker
         name = get_company_name(ticker)
-        res  = _backtest_ticker(code, start, end, hold, company_name=name)
+        res  = _backtest_ticker(code, start, end, hold, company_name=name, market=request.market)
         results.append(res)
         print(f"BT {code}: signals={res.get('total_signals')} "
               f"WR={res.get('win_rate')} avg={res.get('avg_return')}")
@@ -1524,7 +1524,7 @@ async def backtest_gridsearch(request: BacktestFullRequest):
     for ticker in request.tickers[:20]:
         code = ticker.split(".")[0] if request.market == "tw" else ticker
         name = get_company_name(ticker)
-        sigs = _collect_wide_signals(code, start, end, hold, company_name=name)
+        sigs = _collect_wide_signals(code, start, end, hold, company_name=name, market=request.market)
         all_signals.extend(sigs)
         print(f"GS {code}: {len(sigs)} candidates")
 
