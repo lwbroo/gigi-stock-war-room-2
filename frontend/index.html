@@ -491,9 +491,11 @@
       const sc = [sf.is_trend_broken, sf.is_momentum_lost, sf.is_heavy_distribution].filter(Boolean).length;
       if (sc >= 2) return <span className="badge-sell">▼ SELL</span>;
       if (sc === 1) return <span className="badge-warn">⚠ WARNING</span>;
-      const gc = conds ? Object.values(conds).filter(Boolean).length : 0;
-      if (gc === 6) return <span className="badge-strong-buy">▲ STRONG BUY</span>;
-      if (gc >= 4)  return <span className="badge-buy">▲ BUY</span>;
+      if (row.signal === 'YES') {
+        const gc = conds ? Object.values(conds).filter(Boolean).length : 0;
+        if (gc === 6) return <span className="badge-strong-buy">▲ STRONG BUY</span>;
+        return <span className="badge-buy">▲ BUY</span>;
+      }
       return <span className="badge-none">—</span>;
     }
 
@@ -1083,7 +1085,7 @@
         if (ai !== bi) return ai ? 1 : -1; return greenCount(b) - greenCount(a);
       });
 
-      const isRowBuy  = (r) => { if(r.signal==='NO_DATA'||r.signal==='ERROR') return false; const sf=r.sell_flags||{}; if([sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length>=1) return false; return greenCount(r)>=(thresholds.minGreenBuy||4); };
+      const isRowBuy  = (r) => { if(r.signal==='NO_DATA'||r.signal==='ERROR'||r.signal==='NO') return false; const sf=r.sell_flags||{}; if([sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length>=1) return false; return r.signal==='YES'; };
       const isRowSell = (r) => { const sf=r.sell_flags||{}; return [sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length>=2; };
       const isRowWarn = (r) => { const sf=r.sell_flags||{}; return [sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length===1; };
 
@@ -1123,7 +1125,7 @@
 
       // Dashboard stats from last scan
       const lastData = currentEntry?.data || [];
-      const dsBuy    = lastData.filter(r => { if (r.signal==='NO_DATA'||r.signal==='ERROR') return false; const sf=r.sell_flags||{}; const sc=[sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length; if(sc>=1) return false; const gc=Object.values(r.conds||{}).filter(Boolean).length; return gc>=(thresholds.minGreenBuy||4); }).length;
+      const dsBuy    = lastData.filter(r => r.signal==='YES').length;
       const dsSell   = lastData.filter(r => { const sf=r.sell_flags||{}; return [sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length>=2; }).length;
       const dsWarn   = lastData.filter(r => { const sf=r.sell_flags||{}; return [sf.is_trend_broken,sf.is_momentum_lost,sf.is_heavy_distribution].filter(Boolean).length===1; }).length;
       const dsNoData = lastData.filter(r => r.signal==='NO_DATA'||r.signal==='ERROR').length;
