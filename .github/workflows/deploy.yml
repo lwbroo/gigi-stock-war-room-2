@@ -1,0 +1,22 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-frontend:
+    name: Deploy Frontend → Vercel
+    runs-on: ubuntu-latest
+    if: contains(toJson(github.event.commits), 'frontend/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Deploy to Vercel
+        run: npx vercel --prod --yes --cwd frontend
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: team_lToGxb7kGacUhPPHPWF2aErp
+          VERCEL_PROJECT_ID: prj_lxUylssLVAetROaHqqcqvyg0eoEp
