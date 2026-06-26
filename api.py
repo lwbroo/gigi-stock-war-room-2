@@ -1741,7 +1741,7 @@ def _analyze_with_grok(news_text: str) -> dict:
         "不要包含任何 markdown 語法，直接輸出純 JSON 字串。"
     )
     resp = client.chat.completions.create(
-        model="grok-beta",
+        model="grok-3-mini-beta",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": f"今日新聞：\n{news_text}"},
