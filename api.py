@@ -1533,20 +1533,22 @@ async def backtest_gridsearch(request: BacktestFullRequest):
 
     # ── Step 2: build parameter grid ───────────────────────────────────────
     grid = []
-    for rsi_lo in [45, 48, 50, 52]:
-        for rsi_hi in [58, 60, 62, 65]:
+    for rsi_lo in [50, 52, 54]:
+        for rsi_hi in [58, 60, 62]:
             if rsi_lo >= rsi_hi:
                 continue
-            for adx_lo in [18, 20]:
-                for adx_hi in [25, 28, 30, 35]:
+            for adx_lo in [18, 20, 22, 24]:
+                for adx_hi in [28, 30, 35]:
                     if adx_lo >= adx_hi:
                         continue
-                    for mh_pct in [33, 40, 50, 60, 66]:
-                        grid.append({
-                            "rsi_lo": rsi_lo, "rsi_hi": rsi_hi,
-                            "adx_lo": adx_lo, "adx_hi": adx_hi,
-                            "macd_h_pct_min": mh_pct,
-                        })
+                    for mh_pct in [50, 60, 66]:
+                        for bias_lo in [0, 2, 4]:
+                            grid.append({
+                                "rsi_lo": rsi_lo, "rsi_hi": rsi_hi,
+                                "adx_lo": adx_lo, "adx_hi": adx_hi,
+                                "macd_h_pct_min": mh_pct,
+                                "bias_lo": bias_lo,
+                            })
 
     # ── Step 3: evaluate each combo (pure in-memory filter) ────────────────
     results = []
@@ -1554,7 +1556,8 @@ async def backtest_gridsearch(request: BacktestFullRequest):
         sub = [s for s in all_signals
                if p["rsi_lo"] <= s["rsi14"] <= p["rsi_hi"]
                and p["adx_lo"] <= s["adx14"] <= p["adx_hi"]
-               and s["macd_h_pct"] >= p["macd_h_pct_min"]]
+               and s["macd_h_pct"] >= p["macd_h_pct_min"]
+               and s["bias"] >= p["bias_lo"]]
 
         if len(sub) < 5:
             continue
@@ -1576,7 +1579,7 @@ async def backtest_gridsearch(request: BacktestFullRequest):
     results.sort(key=lambda x: (x["sharpe"] or -99), reverse=True)
 
     # Mark which rank the current live params achieve
-    current = {"rsi_lo": 52, "rsi_hi": 60, "adx_lo": 18, "adx_hi": 30, "macd_h_pct_min": 60}
+    current = {"rsi_lo": 52, "rsi_hi": 60, "adx_lo": 18, "adx_hi": 30, "macd_h_pct_min": 60, "bias_lo": 0}
     current_rank = next(
         (i + 1 for i, r in enumerate(results) if r["params"] == current), None
     )
