@@ -1132,7 +1132,9 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["MACD"]       = e12 - e26
     d["MACD_Sig"]   = d["MACD"].ewm(span=9, adjust=False).mean()
     d["MACD_H"]     = d["MACD"] - d["MACD_Sig"]
-    d["MACD_H_Med"] = d["MACD_H"].rolling(50).quantile(0.6)  # 60th pct：Grid Search 最優
+    for _p in [33, 40, 50, 60, 66]:
+        d[f"MACD_H_p{_p}"] = d["MACD_H"].rolling(50).quantile(_p / 100)
+    d["MACD_H_Med"] = d["MACD_H_p60"]  # backward compat
 
     # ADX-14 (vectorized)
     tr = pd.concat([
@@ -1167,22 +1169,46 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def _bt_is_buy(row) -> bool:
-    """Apply core signal logic to one row of computed indicators (v6.5 params)."""
+# ── Market-specific signal parameters ────────────────────────────────────────
+TW_BEST_PARAMS: dict = {
+    "rsi_lo": 52, "rsi_hi": 60,
+    "bias_lo": 4,  "bias_hi": 8,
+    "adx_lo": 18,  "adx_hi": 35,
+    "macd_h_pct_min": 60,
+}
+US_DEFAULT_PARAMS: dict = {   # placeholder — run Grid Search to optimise
+    "rsi_lo": 45, "rsi_hi": 75,
+    "bias_lo": 0,  "bias_hi": 15,
+    "adx_lo": 15,  "adx_hi": 45,
+    "macd_h_pct_min": 40,
+}
+
+def _get_market_params(market: str) -> dict:
+    return TW_BEST_PARAMS if market == "tw" else US_DEFAULT_PARAMS
+
+_MACD_H_COLS = {33: "MACD_H_p33", 40: "MACD_H_p40",
+                50: "MACD_H_p50", 60: "MACD_H_p60", 66: "MACD_H_p66"}
+
+def _bt_is_buy(row, params: Optional[dict] = None) -> bool:
+    """Apply core signal logic to one row of computed indicators."""
+    if params is None:
+        params = TW_BEST_PARAMS
+    pct_min   = params.get("macd_h_pct_min", 60)
+    pct_col   = _MACD_H_COLS[min(_MACD_H_COLS, key=lambda x: abs(x - pct_min))]
     try:
-        for col in ["MA20", "VMA20", "RSI14", "Bias", "MACD", "MACD_Sig", "ADX14", "MACD_H_Med"]:
+        for col in ["MA20", "VMA20", "RSI14", "Bias", "MACD", "MACD_Sig", "ADX14", pct_col]:
             if pd.isna(row[col]):
                 return False
         return (
-            row["Close"]    > row["MA20"]          and
-            row["Volume"]   > row["VMA20"]         and
-            52 <= row["RSI14"] <= 60               and  # Grid Search BEST：52-60
-            4  <= row["Bias"]  <= 8                and  # Grid Search BEST：Bias ≥4%
-            row["MACD"]     > row["MACD_Sig"]      and
-            row["MACD_H"]   > row["MACD_H_Med"]    and  # MACD_H ≥60th pct
-            18 <= row["ADX14"] <= 35               and  # Grid Search BEST：18-35
-            row["OBV"]      > row["OBV_MA20"]      and
-            bool(row["monthly_trend"])              and
+            row["Close"]  > row["MA20"]                                      and
+            row["Volume"] > row["VMA20"]                                     and
+            params["rsi_lo"]  <= row["RSI14"] <= params["rsi_hi"]           and
+            params["bias_lo"] <= row["Bias"]  <= params.get("bias_hi", 8)   and
+            row["MACD"]   > row["MACD_Sig"]                                  and
+            row["MACD_H"] > row[pct_col]                                     and
+            params["adx_lo"]  <= row["ADX14"] <= params["adx_hi"]           and
+            row["OBV"]    > row["OBV_MA20"]                                  and
+            bool(row["monthly_trend"])                                        and
             not bool(row["is_extended"])
         )
     except Exception:
@@ -1271,9 +1297,10 @@ def _backtest_ticker(
     e_dt = pd.to_datetime(end_date)
     in_range = df[(df["date"] >= s_dt) & (df["date"] <= e_dt)]
 
+    params = _get_market_params(market)
     signals = []
     for idx, row in in_range.iterrows():
-        if not _bt_is_buy(row):
+        if not _bt_is_buy(row, params):
             continue
 
         # Exit: hold_days trading-day rows after entry
@@ -1531,24 +1558,35 @@ async def backtest_gridsearch(request: BacktestFullRequest):
     if len(all_signals) < 8:
         return {"error": "Not enough candidate signals", "total_candidates": len(all_signals)}
 
-    # ── Step 2: build parameter grid ───────────────────────────────────────
+    # ── Step 2: build parameter grid (market-specific ranges) ──────────────
+    is_tw = request.market == "tw"
     grid = []
-    for rsi_lo in [50, 52, 54]:
-        for rsi_hi in [58, 60, 62]:
+    rsi_los  = [50, 52, 54]       if is_tw else [45, 50, 55, 60]
+    rsi_his  = [58, 60, 62]       if is_tw else [65, 70, 75, 80]
+    adx_los  = [18, 20, 22, 24]   if is_tw else [10, 15, 18, 20]
+    adx_his  = [28, 30, 35]       if is_tw else [30, 35, 40, 45]
+    mh_pcts  = [50, 60, 66]       if is_tw else [33, 40, 50, 60]
+    bias_los = [0, 2, 4]          if is_tw else [0, 2, 4]
+    bias_his = [8]                 if is_tw else [8, 12, 15]
+
+    for rsi_lo in rsi_los:
+        for rsi_hi in rsi_his:
             if rsi_lo >= rsi_hi:
                 continue
-            for adx_lo in [18, 20, 22, 24]:
-                for adx_hi in [28, 30, 35]:
+            for adx_lo in adx_los:
+                for adx_hi in adx_his:
                     if adx_lo >= adx_hi:
                         continue
-                    for mh_pct in [50, 60, 66]:
-                        for bias_lo in [0, 2, 4]:
-                            grid.append({
-                                "rsi_lo": rsi_lo, "rsi_hi": rsi_hi,
-                                "adx_lo": adx_lo, "adx_hi": adx_hi,
-                                "macd_h_pct_min": mh_pct,
-                                "bias_lo": bias_lo,
-                            })
+                    for mh_pct in mh_pcts:
+                        for bias_lo in bias_los:
+                            for bias_hi in bias_his:
+                                grid.append({
+                                    "rsi_lo": rsi_lo, "rsi_hi": rsi_hi,
+                                    "adx_lo": adx_lo, "adx_hi": adx_hi,
+                                    "macd_h_pct_min": mh_pct,
+                                    "bias_lo": bias_lo,
+                                    "bias_hi": bias_hi,
+                                })
 
     # ── Step 3: evaluate each combo (pure in-memory filter) ────────────────
     results = []
@@ -1557,7 +1595,7 @@ async def backtest_gridsearch(request: BacktestFullRequest):
                if p["rsi_lo"] <= s["rsi14"] <= p["rsi_hi"]
                and p["adx_lo"] <= s["adx14"] <= p["adx_hi"]
                and s["macd_h_pct"] >= p["macd_h_pct_min"]
-               and s["bias"] >= p["bias_lo"]]
+               and p["bias_lo"] <= s["bias"] <= p["bias_hi"]]
 
         if len(sub) < 5:
             continue
@@ -1578,13 +1616,20 @@ async def backtest_gridsearch(request: BacktestFullRequest):
 
     results.sort(key=lambda x: (x["sharpe"] or -99), reverse=True)
 
-    # Mark which rank the current live params achieve
-    current = {"rsi_lo": 52, "rsi_hi": 60, "adx_lo": 18, "adx_hi": 35, "macd_h_pct_min": 60, "bias_lo": 4}
+    # Current live params for this market
+    live = _get_market_params(request.market)
+    current = {
+        "rsi_lo": live["rsi_lo"], "rsi_hi": live["rsi_hi"],
+        "adx_lo": live["adx_lo"], "adx_hi": live["adx_hi"],
+        "macd_h_pct_min": live["macd_h_pct_min"],
+        "bias_lo": live["bias_lo"], "bias_hi": live.get("bias_hi", 8),
+    }
     current_rank = next(
         (i + 1 for i, r in enumerate(results) if r["params"] == current), None
     )
 
     return {
+        "market":           request.market,
         "total_candidates": len(all_signals),
         "combos_tested":    len(results),
         "current_rank":     current_rank,

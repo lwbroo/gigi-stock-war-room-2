@@ -1991,7 +1991,10 @@
               <div style={{marginBottom:24,paddingTop:4}}>
                 <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
                   <span style={{fontSize:14,fontWeight:700,color:'var(--text-primary)'}}>🔍 Grid Search 最優參數</span>
-                  <span style={{fontSize:11,color:'var(--text-muted)'}}>自動測試 RSI × ADX × MACD_H × Bias 的所有組合</span>
+                  <span style={{fontSize:11,color:'var(--text-muted)'}}>
+                    自動測試 RSI × ADX × MACD_H × Bias 的所有組合
+                    {gsResults && <span style={{marginLeft:8,color:'var(--accent)'}}>({gsResults.market==='tw'?'🇹🇼 台股':'🇺🇸 美股'} 參數集)</span>}
+                  </span>
                 </div>
                 <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
                   <button className="btn btn-ghost" onClick={runGridSearch} disabled={!btSelected.length||gsLoading}
@@ -2010,7 +2013,7 @@
                     <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',minWidth:620}}>
                       <thead>
                         <tr style={{background:'var(--bg-2)'}}>
-                          {['#','RSI 範圍','ADX 範圍','MACD_H 最低%','Bias 最低%','訊號數','勝率','平均報酬','Sharpe',''].map((h,i)=>(
+                          {['#','RSI 範圍','ADX 範圍','MACD_H 最低%','Bias 範圍','訊號數','勝率','平均報酬','Sharpe',''].map((h,i)=>(
                             <th key={i} style={{padding:'7px 10px',textAlign:i>=5?'right':'left',fontSize:10,
                               fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',
                               color:'var(--text-muted)',borderBottom:'2px solid var(--border)',whiteSpace:'nowrap'}}>
@@ -2040,7 +2043,7 @@
                                 ≥{p.macd_h_pct_min}%
                               </td>
                               <td style={{padding:'7px 10px',textAlign:'right',fontFamily:'monospace',color:(p.bias_lo||0)>0?'var(--yellow)':'var(--text-muted)'}}>
-                                {(p.bias_lo||0)>0?`≥${p.bias_lo}%`:'—'}
+                                {(p.bias_lo||0)>0||p.bias_hi?`${p.bias_lo||0}–${p.bias_hi||8}%`:'—'}
                               </td>
                               <td style={{padding:'7px 10px',textAlign:'right',color:'var(--text-muted)'}}>{row.n_signals}</td>
                               <td style={{padding:'7px 10px',textAlign:'right',fontWeight:700,
