@@ -2564,6 +2564,40 @@
                   <div className="tt-kv"><div className="tt-k">訊號</div><div className="tt-v" style={{color:isBuy?'var(--green)':'var(--text-muted)'}}>{isBuy ? '▲ BUY' : '—'}</div></div>
                 </div>
 
+                {/* 停損 / 目標 */}
+                {(row.stop_loss || row.target_price) && (() => {
+                  const sl = row.stop_loss;
+                  const tp = row.target_price;
+                  const price = row.close;
+                  const riskPct  = price && sl ? ((sl - price) / price * 100).toFixed(1) : null;
+                  const rewardPct= price && tp ? ((tp - price) / price * 100).toFixed(1) : null;
+                  const rr = riskPct && rewardPct ? (Math.abs(parseFloat(rewardPct)) / Math.abs(parseFloat(riskPct))).toFixed(1) : null;
+                  return (
+                    <div className="tt-section">
+                      <div className="tt-section-label">停損 / 目標價</div>
+                      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:5}}>
+                        <div className="tt-kv">
+                          <div className="tt-k">停損價</div>
+                          <div className="tt-v" style={{color:'var(--red)'}}>{sl?.toFixed(1) ?? '—'}</div>
+                          {riskPct && <div style={{fontSize:10,color:'var(--red)',marginTop:1}}>{riskPct}%</div>}
+                        </div>
+                        <div className="tt-kv">
+                          <div className="tt-k">目標價</div>
+                          <div className="tt-v" style={{color:'var(--green)'}}>{tp?.toFixed(1) ?? '—'}</div>
+                          {rewardPct && <div style={{fontSize:10,color:'var(--green)',marginTop:1}}>+{rewardPct}%</div>}
+                        </div>
+                        <div className="tt-kv">
+                          <div className="tt-k">風報比</div>
+                          <div className="tt-v" style={{color: rr>=3?'var(--green)':rr>=2?'var(--yellow)':'var(--red)'}}>
+                            {rr ? `1 : ${rr}` : '—'}
+                          </div>
+                          {rr && <div style={{fontSize:9,color:'var(--text-muted)',marginTop:1}}>{rr>=3?'佳':rr>=2?'尚可':'偏低'}</div>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* 買進條件 */}
                 <div className="tt-section">
                   <div className="tt-section-label">策略買進條件 (需全部✅)</div>
