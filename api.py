@@ -1703,19 +1703,28 @@ def _fetch_news_playwright() -> Optional[str]:
 
 
 def _fetch_news_yfinance() -> str:
-    """Fallback: pull market news from yfinance (SPY/QQQ/VIX)."""
+    """Fallback: pull market news from yfinance (SPY/QQQ/NVDA/AAPL)."""
     items, seen = [], set()
-    for sym in ["SPY", "QQQ", "^VIX"]:
+    for sym in ["SPY", "QQQ", "NVDA", "AAPL", "MSFT"]:
         try:
             t = yf.Ticker(sym)
-            for n in (t.news or [])[:4]:
-                title = n.get("title", "")
-                if title and title not in seen:
-                    seen.add(title)
-                    summary = n.get("summary") or n.get("description") or ""
-                    items.append(f"標題: {title}\n摘要: {summary[:200]}")
-        except Exception:
-            pass
+            news = t.news or []
+            for n in news[:4]:
+                # yfinance 0.2.x: title is under content.title; older: n.title
+                content = n.get("content") or {}
+                title = (content.get("title") or n.get("title") or "").strip()
+                if not title or title in seen:
+                    continue
+                seen.add(title)
+                summary = (content.get("summary") or content.get("description")
+                           or n.get("summary") or n.get("description") or "")
+                items.append(f"標題: {title}\n摘要: {str(summary)[:200]}")
+        except Exception as e:
+            print(f"[Sentiment] yfinance news {sym}: {e}")
+    if not items:
+        # Last resort: give Grok today's date for a neutral assessment
+        today = _dt.date.today().isoformat()
+        return f"今天是 {today}，請根據你的最新知識對當前全球金融市場情緒做出評估。"
     return "\n\n".join(items[:8])
 
 
