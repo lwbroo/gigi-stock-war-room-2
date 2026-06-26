@@ -1669,5 +1669,129 @@ async def forecast_eps(code: str):
     }
 
 
+# ══════════════════════════ SENTIMENT MODULE (v7.0) ══════════════════════════
+
+import datetime as _dt
+
+GROK_API_KEY = os.environ.get("GROK_API_KEY", "")
+_SENTIMENT_CACHE: dict = {"date": None, "data": None}
+
+
+def _fetch_news_playwright() -> Optional[str]:
+    """Scrape Investing.com via Playwright. Returns None if env doesn't support it."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto("https://www.investing.com/news/latest-news",
+                      wait_until="networkidle", timeout=25000)
+            articles = page.locator("article.news-analysis-v2_item__6vEFA").all()
+            news_list = []
+            for idx, article in enumerate(articles[:5]):
+                try:
+                    title = article.locator("[data-testid='article-title']").inner_text()
+                    desc  = article.locator("[data-testid='article-description']").inner_text()
+                    news_list.append(f"【新聞 {idx+1}】\n標題: {title}\n摘要: {desc}")
+                except Exception:
+                    continue
+            browser.close()
+            return "\n".join(news_list) if news_list else None
+    except Exception as e:
+        print(f"[Sentiment] Playwright unavailable: {e}")
+        return None
+
+
+def _fetch_news_yfinance() -> str:
+    """Fallback: pull market news from yfinance (SPY/QQQ/VIX)."""
+    items, seen = [], set()
+    for sym in ["SPY", "QQQ", "^VIX"]:
+        try:
+            t = yf.Ticker(sym)
+            for n in (t.news or [])[:4]:
+                title = n.get("title", "")
+                if title and title not in seen:
+                    seen.add(title)
+                    summary = n.get("summary") or n.get("description") or ""
+                    items.append(f"標題: {title}\n摘要: {summary[:200]}")
+        except Exception:
+            pass
+    return "\n\n".join(items[:8])
+
+
+def _analyze_with_grok(news_text: str) -> dict:
+    """Send news to Grok (xAI) and return structured sentiment dict."""
+    from openai import OpenAI
+    client = OpenAI(api_key=GROK_API_KEY, base_url="https://api.x.ai/v1")
+    system_prompt = (
+        "你是一位頂尖的量化交易員。請評估以下最新財經新聞，為今日市場情緒打分。\n"
+        "嚴格回傳標準 JSON，包含三個欄位：\n"
+        "1. 'sentiment_score': 浮點數，範圍 -1.0（極度悲觀）到 +1.0（極度樂觀）。\n"
+        "2. 'key_reason': 繁體中文，一句話說明核心原因。\n"
+        "3. 'target_sectors': 受影響最大的產業板塊陣列，如 ['半導體', 'AI']。\n"
+        "不要包含任何 markdown 語法，直接輸出純 JSON 字串。"
+    )
+    resp = client.chat.completions.create(
+        model="grok-beta",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": f"今日新聞：\n{news_text}"},
+        ],
+        temperature=0.0,
+    )
+    raw = resp.choices[0].message.content
+    try:
+        return json.loads(raw)
+    except Exception:
+        print(f"[Sentiment] Grok parse error, raw: {raw[:200]}")
+        return {"sentiment_score": 0.0, "key_reason": "解析失敗，預設中立", "target_sectors": []}
+
+
+def _get_or_refresh_sentiment(force: bool = False) -> dict:
+    today = _dt.date.today().isoformat()
+    if not force and _SENTIMENT_CACHE["date"] == today and _SENTIMENT_CACHE["data"]:
+        return {**_SENTIMENT_CACHE["data"], "cached": True}
+
+    news = _fetch_news_playwright()
+    source = "investing.com"
+    if not news:
+        news = _fetch_news_yfinance()
+        source = "yfinance"
+
+    if not news:
+        return {"sentiment_score": 0.0, "key_reason": "無法獲取新聞", "target_sectors": [],
+                "source": "none", "cached": False}
+
+    result = _analyze_with_grok(news)
+    result["fetched_at"] = _dt.datetime.now().isoformat()
+    result["source"]     = source
+    result["cached"]     = False
+    _SENTIMENT_CACHE["date"] = today
+    _SENTIMENT_CACHE["data"] = result
+    return result
+
+
+@app.get("/api/sentiment")
+async def get_sentiment():
+    if not GROK_API_KEY:
+        return {"sentiment_score": 0.0, "key_reason": "GROK_API_KEY 未設定",
+                "target_sectors": [], "error": "no_key"}
+    try:
+        return _get_or_refresh_sentiment()
+    except Exception as e:
+        return {"sentiment_score": 0.0, "key_reason": str(e),
+                "target_sectors": [], "error": "fetch_failed"}
+
+
+@app.post("/api/sentiment/refresh")
+async def refresh_sentiment():
+    if not GROK_API_KEY:
+        return {"error": "no_key"}
+    try:
+        return _get_or_refresh_sentiment(force=True)
+    except Exception as e:
+        return {"error": str(e)}
+
+
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=8000)

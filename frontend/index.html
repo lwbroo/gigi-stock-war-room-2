@@ -557,13 +557,21 @@
     };
 
     /* ── Overall signal (v6.0) ── */
-    function computeOverall(row, conds) {
+    function computeOverall(row, conds, sentimentScore = null) {
       if (!row || row.signal === 'NO_DATA' || row.signal === 'ERROR') return null;
       const sf = row.sell_flags || {};
       let score = 0;
       const reasons = [];
       const allDetails = [];
       const d = (text, pts) => { allDetails.push({text, pts}); };
+
+      // ── 市場情緒 (Grok) ──
+      if (sentimentScore != null) {
+        if      (sentimentScore >= 0.5)  { score += 10; reasons.push('市場極樂觀'); d(`Grok情緒 +${sentimentScore.toFixed(2)}`, +10); }
+        else if (sentimentScore >= 0.2)  { score +=  5; reasons.push('市場偏樂觀'); d(`Grok情緒 +${sentimentScore.toFixed(2)}`,  +5); }
+        else if (sentimentScore <= -0.5) { score -= 15; reasons.push('市場極悲觀'); d(`Grok情緒 ${sentimentScore.toFixed(2)}`, -15); }
+        else if (sentimentScore <= -0.2) { score -=  8; reasons.push('市場偏悲觀'); d(`Grok情緒 ${sentimentScore.toFixed(2)}`,  -8); }
+      }
 
       // ── Sell flags ──
       if (sf.is_trend_broken)       { score -= 20; reasons.push('跌破MA20');   d('跌破MA20', -20); }
@@ -744,6 +752,10 @@
       const [regStatus,   setRegStatus]   = useState('');
       const [regLoading,  setRegLoading]  = useState(false);
 
+      // v7.0 sentiment state
+      const [sentiment,      setSentiment]      = useState(null);
+      const [sentimentLoading, setSentimentLoading] = useState(false);
+
       const saveTimer       = useRef(null);
       const userModified    = useRef({ tw:false, us:false });
       const tickersRef      = useRef([]);
@@ -756,6 +768,15 @@
       useEffect(() => { marketRef.current  = market; });
       useEffect(() => { lineTokenRef.current = lineToken; }, [lineToken]);
       useEffect(() => { priceAlertsRef.current = priceAlerts; }, [priceAlerts]);
+
+      // v7.0 — fetch sentiment on mount (cached server-side for the day)
+      useEffect(() => {
+        setSentimentLoading(true);
+        fetch(`${API_BASE}/api/sentiment`)
+          .then(r => r.json())
+          .then(d => { setSentiment(d); setSentimentLoading(false); })
+          .catch(() => setSentimentLoading(false));
+      }, []);
 
       const setSavedResults = (updater) => {
         setSavedResultsRaw(prev => {
@@ -1214,6 +1235,55 @@
             })}
           </div>
 
+          {/* v7.0 Sentiment Card */}
+          {(() => {
+            const sc = sentiment?.sentiment_score;
+            const hasData = sc != null && !sentiment?.error;
+            const pct = hasData ? Math.round(((sc + 1) / 2) * 100) : 50;
+            const barColor = sc >= 0.2 ? 'var(--green)' : sc <= -0.2 ? 'var(--red)' : 'var(--yellow)';
+            const emoji = sc >= 0.5 ? '🚀' : sc >= 0.2 ? '🟢' : sc <= -0.5 ? '🔴' : sc <= -0.2 ? '⚠️' : '🔵';
+            const label = sc >= 0.5 ? '極度樂觀' : sc >= 0.2 ? '偏樂觀' : sc <= -0.5 ? '極度悲觀' : sc <= -0.2 ? '偏悲觀' : '市場中性';
+            return (
+              <div style={{
+                background:'var(--bg-1)', border:'1px solid var(--border)', borderRadius:10,
+                padding:'10px 14px', marginBottom:8,
+                display:'flex', alignItems:'center', gap:12, flexWrap:'wrap',
+              }}>
+                <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
+                  <span style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.07em'}}>市場情緒</span>
+                  {sentimentLoading && <span style={{fontSize:11,color:'var(--text-muted)'}}>分析中…</span>}
+                  {sentiment?.error === 'no_key' && <span style={{fontSize:11,color:'var(--text-muted)'}}>（需設定 GROK_API_KEY）</span>}
+                </div>
+                {hasData && (<>
+                  <span style={{fontSize:18}}>{emoji}</span>
+                  <span style={{fontSize:13,fontWeight:700,color:barColor}}>{label}</span>
+                  <div style={{flex:1,minWidth:80,maxWidth:160}}>
+                    <div style={{height:6,borderRadius:3,background:'var(--bg-2)',overflow:'hidden'}}>
+                      <div style={{height:'100%',width:`${pct}%`,background:barColor,transition:'width 0.4s'}} />
+                    </div>
+                    <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2,textAlign:'center'}}>
+                      {sc >= 0 ? '+' : ''}{sc?.toFixed(2)}
+                    </div>
+                  </div>
+                  <span style={{fontSize:12,color:'var(--text-secondary)',flex:2,minWidth:120}}>{sentiment.key_reason}</span>
+                  {sentiment.target_sectors?.length > 0 && (
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                      {sentiment.target_sectors.map(s => (
+                        <span key={s} style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'var(--bg-2)',color:'var(--text-muted)'}}>{s}</span>
+                      ))}
+                    </div>
+                  )}
+                  <button onClick={() => {
+                    setSentimentLoading(true);
+                    fetch(`${API_BASE}/api/sentiment/refresh`, {method:'POST'})
+                      .then(r=>r.json()).then(d=>{setSentiment(d);setSentimentLoading(false);})
+                      .catch(()=>setSentimentLoading(false));
+                  }} style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:14,padding:'0 4px'}} title="重新分析">↻</button>
+                </>)}
+              </div>
+            );
+          })()}
+
           {/* App Nav */}
           <div className="app-nav">
             {[
@@ -1445,7 +1515,7 @@
                                   </td>
                                   <td>
                                     {(() => {
-                                      const ov = computeOverall(row, noData ? null : rowConds);
+                                      const ov = computeOverall(row, noData ? null : rowConds, sentiment?.sentiment_score ?? null);
                                       if (!ov) return <span className="overall-reasons">—</span>;
                                       return (
                                         <div className="overall-cell"
