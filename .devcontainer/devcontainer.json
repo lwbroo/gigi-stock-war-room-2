@@ -1,0 +1,35 @@
+{
+  "name": "Gigi Stock War Room",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+
+  "postCreateCommand": "pip install -r requirements.txt && npm install -g @anthropic-ai/claude-code vercel",
+
+  "secrets": {
+    "ANTHROPIC_API_KEY": { "description": "Claude Code API key (get from console.anthropic.com)" },
+    "VERCEL_TOKEN": { "description": "Vercel deploy token (get from vercel.com/account/tokens)" }
+  },
+
+  "remoteEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    "VERCEL_TOKEN": "${localEnv:VERCEL_TOKEN}"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "editor.formatOnSave": false
+      }
+    }
+  },
+
+  "forwardPorts": [8000]
+}
