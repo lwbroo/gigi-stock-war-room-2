@@ -1802,5 +1802,192 @@ async def refresh_sentiment():
         return {"error": str(e)}
 
 
+# ─── v8.0 Claude Chat Agent ───────────────────────────────────────────────────
+import base64 as _b64
+import anthropic as _anthropic
+
+ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
+GITHUB_TOKEN       = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO        = "lwbroo/gigi-stock-war-room-2"
+VERCEL_DEPLOY_HOOK = os.environ.get("VERCEL_DEPLOY_HOOK", "")
+
+_CHAT_TOOLS = [
+    {
+        "name": "read_file",
+        "description": "Read a file from the GitHub repository. Use this to understand current code before making changes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path, e.g. 'frontend/index.html' or 'api.py'"}
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "write_file",
+        "description": "Write/update a file in the GitHub repository and commit it. After writing frontend/index.html, call deploy_frontend to go live.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":           {"type": "string", "description": "File path to write"},
+                "content":        {"type": "string", "description": "Full new file content"},
+                "commit_message": {"type": "string", "description": "Git commit message (concise, imperative)"}
+            },
+            "required": ["path", "content", "commit_message"]
+        }
+    },
+    {
+        "name": "deploy_frontend",
+        "description": "Trigger Vercel deployment for the frontend. Call this after writing frontend/index.html.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "list_files",
+        "description": "List files in a directory of the repository.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory path (empty string for root)"}
+            },
+            "required": []
+        }
+    }
+]
+
+def _gh_headers():
+    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+
+def _gh_read(path: str) -> tuple:
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+    r = requests.get(url, headers=_gh_headers(), timeout=15)
+    if r.status_code != 200:
+        return None, None
+    data = r.json()
+    content = _b64.b64decode(data["content"].replace("\n","")).decode("utf-8")
+    return content, data["sha"]
+
+def _gh_write(path: str, content: str, message: str) -> str:
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+    _, sha = _gh_read(path)
+    payload: dict = {
+        "message": message,
+        "content": _b64.b64encode(content.encode("utf-8")).decode("utf-8"),
+    }
+    if sha:
+        payload["sha"] = sha
+    r = requests.put(url, json=payload, headers=_gh_headers(), timeout=20)
+    if r.status_code in (200, 201):
+        return f"✅ Committed: {path} — \"{message}\""
+    return f"❌ GitHub write failed ({r.status_code}): {r.text[:200]}"
+
+def _gh_list(path: str = "") -> str:
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
+    r = requests.get(url, headers=_gh_headers(), timeout=10)
+    if r.status_code != 200:
+        return f"Error: {r.status_code}"
+    items = r.json()
+    return "\n".join(f"{'📁' if i['type']=='dir' else '📄'} {i['path']}" for i in items)
+
+def _run_tool(name: str, inp: dict, actions: list) -> str:
+    if name == "read_file":
+        content, _ = _gh_read(inp["path"])
+        if content is None:
+            return f"File not found: {inp['path']}"
+        actions.append(f"📖 Read `{inp['path']}` ({len(content):,} chars)")
+        return content
+    if name == "write_file":
+        result = _gh_write(inp["path"], inp["content"], inp["commit_message"])
+        actions.append(f"✏️ {result}")
+        return result
+    if name == "deploy_frontend":
+        if not VERCEL_DEPLOY_HOOK:
+            actions.append("⚠️ VERCEL_DEPLOY_HOOK not set — skipping deploy")
+            return "VERCEL_DEPLOY_HOOK not configured. Code was committed to GitHub. Set VERCEL_DEPLOY_HOOK in Render env vars to enable auto-deploy."
+        r = requests.post(VERCEL_DEPLOY_HOOK, timeout=10)
+        if r.status_code in (200, 201):
+            actions.append("🚀 Vercel deployment triggered — live in ~30s")
+            return "Vercel deployment triggered successfully."
+        actions.append(f"❌ Vercel deploy failed ({r.status_code})")
+        return f"Vercel deploy failed: {r.status_code}"
+    if name == "list_files":
+        result = _gh_list(inp.get("path", ""))
+        actions.append(f"📂 Listed `{inp.get('path','root')}`")
+        return result
+    return f"Unknown tool: {name}"
+
+_CHAT_SYSTEM = """You are the AI coding assistant built into Gigi Stock War Room v8.0.
+
+You have direct access to the codebase and can read, edit, commit, and deploy it.
+
+## Project
+- Frontend: `frontend/index.html` — single-file React 18 (CDN Babel). Deployed on Vercel.
+- Backend:  `api.py` — FastAPI. Deployed on Render (auto-deploys on git push).
+- Repo: lwbroo/gigi-stock-war-room-2
+
+## Rules
+1. Always read the relevant file BEFORE making any edit, so you have full context.
+2. For frontend changes: read → edit → write_file → deploy_frontend. Safe to do directly.
+3. For backend changes (api.py): describe the change and confirm with the user BEFORE writing. If the backend breaks, the chat breaks too.
+4. Keep the Premium Dark Glass design system (dark bg, glassmorphism, Inter font, indigo accent).
+5. Never remove existing features. Additions only, unless the user explicitly asks to remove.
+6. Write concise commit messages in imperative form.
+7. After deploying, tell the user the live URL: https://gigi-frontend-mu.vercel.app
+
+## Tech notes
+- Python 3.9 on Render: use Optional[X] not X|None
+- PatternBadge must be defined OUTSIDE App() component
+- sectorHeat useMemo must come AFTER isRowBuy/Sell/Warn declarations
+- @babel/standalone@7.23.10, data-presets="react,env"
+"""
+
+class ChatRequest(BaseModel):
+    messages: list[dict]
+
+@app.post("/api/chat")
+async def chat_agent(body: ChatRequest):
+    if not ANTHROPIC_API_KEY:
+        return {"response": "ANTHROPIC_API_KEY 未設定。請在 Render 環境變數中加入。", "actions": []}
+    if not GITHUB_TOKEN:
+        return {"response": "GITHUB_TOKEN 未設定。請在 Render 環境變數中加入。", "actions": []}
+
+    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    messages = [{"role": m["role"], "content": m["content"]} for m in body.messages]
+    actions: list = []
+
+    for _ in range(12):  # max agentic iterations
+        resp = client.messages.create(
+            model="claude-opus-4-8",
+            max_tokens=8192,
+            system=_CHAT_SYSTEM,
+            tools=_CHAT_TOOLS,
+            messages=messages
+        )
+
+        if resp.stop_reason == "end_turn":
+            text = next((b.text for b in resp.content if hasattr(b, "text")), "")
+            return {"response": text, "actions": actions}
+
+        if resp.stop_reason == "tool_use":
+            messages.append({"role": "assistant", "content": resp.content})
+            tool_results = []
+            for block in resp.content:
+                if block.type == "tool_use":
+                    result = _run_tool(block.name, block.input, actions)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": str(result)
+                    })
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            break
+
+    return {"response": "Agent reached max iterations.", "actions": actions}
+
+
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=8000)
