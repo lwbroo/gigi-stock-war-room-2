@@ -4,7 +4,7 @@ import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -986,6 +986,141 @@ async def send_notify(req: NotifyRequest):
     if not req.line_token: return {"status":"skipped"}
     send_line_notify(req.message, req.line_token)
     return {"status":"ok"}
+
+
+# ── Scheduled Notifications ────────────────────────────────────────────────────
+
+_SCHEDULED_LINE_TOKEN = os.environ.get("LINE_NOTIFY_TOKEN", "")
+_TW_TZ = timezone(timedelta(hours=8))
+
+@app.post("/api/scheduled/scan")
+async def scheduled_scan(market: str = "tw"):
+    """Called by GitHub Actions 1hr before market open. Scans watchlist → LINE."""
+    token = _SCHEDULED_LINE_TOKEN
+    if not token:
+        return {"status": "skipped", "reason": "LINE_NOTIFY_TOKEN not set"}
+
+    # ── Read watchlist from GSheets ──────────────────────────────────────────
+    try:
+        ws = _get_sheet_tab(market)
+        raw_tickers = ws.col_values(1)
+        tickers = [t.strip() for t in raw_tickers if t.strip() and t.strip() != _TICKER_COL]
+    except Exception as e:
+        return {"status": "error", "reason": f"watchlist: {e}"}
+
+    if not tickers:
+        return {"status": "skipped", "reason": "empty watchlist"}
+
+    # ── Run scan (reuse existing endpoint logic) ──────────────────────────────
+    req = ScanRequest(tickers=tickers, market=market, line_token="")
+    result = await scan_stocks(req)
+    data: List[Dict[str, Any]] = result.get("data", [])
+
+    buy_rows  = [r for r in data if r.get("signal") == "YES"]
+    sell_rows = [r for r in data if sum(1 for v in r.get("sell_flags", {}).values() if v) >= 2]
+    warn_rows = [r for r in data if sum(1 for v in r.get("sell_flags", {}).values() if v) == 1
+                                 and r.get("signal") != "YES"]
+
+    # ── Format LINE message ──────────────────────────────────────────────────
+    now_tw   = datetime.now(_TW_TZ)
+    flag     = "🇹🇼" if market == "tw" else "🇺🇸"
+    mkt_name = "台股" if market == "tw" else "美股"
+
+    lines = [
+        f"\n{flag} {mkt_name}開盤前掃描 {now_tw.strftime('%H:%M')}  {now_tw.strftime('%Y-%m-%d')}",
+        f"📡 掃描 {len(tickers)} 支 | 🟢買進 {len(buy_rows)} | ⚠️警示 {len(warn_rows)} | 🔴出場 {len(sell_rows)}",
+    ]
+
+    if buy_rows:
+        lines.append("\n🚀 買進訊號：")
+        for r in buy_rows[:8]:
+            name = r.get("companyName") or ""
+            conf = " ✅確認" if r.get("confirmed_signal") else ""
+            earn = " ⚠️財報" if r.get("near_earnings") else ""
+            lines.append(f"• {r['ticker']} {name}{conf}{earn}")
+
+    if sell_rows:
+        lines.append("\n🔴 出場訊號：")
+        for r in sell_rows[:5]:
+            flags = [k.replace("is_","").replace("_"," ")
+                     for k, v in r.get("sell_flags", {}).items() if v]
+            lines.append(f"• {r['ticker']} {r.get('companyName','')} — {', '.join(flags[:2])}")
+
+    if warn_rows:
+        lines.append("\n⚠️ 觀察名單：")
+        for r in warn_rows[:4]:
+            lines.append(f"• {r['ticker']} {r.get('companyName','')}")
+
+    if not buy_rows and not sell_rows:
+        lines.append("\n😴 今日無明顯訊號，繼續觀望")
+
+    lines.append("\n🔗 https://gigi-frontend-mu.vercel.app")
+    send_line_notify("\n".join(lines), token)
+
+    return {"status": "ok", "market": market,
+            "scanned": len(tickers), "buy": len(buy_rows),
+            "sell": len(sell_rows), "warn": len(warn_rows)}
+
+
+@app.post("/api/scheduled/summary")
+async def midnight_summary():
+    """Called by GitHub Actions at midnight Taiwan time. Daily market recap → LINE."""
+    token = _SCHEDULED_LINE_TOKEN
+    if not token:
+        return {"status": "skipped", "reason": "LINE_NOTIFY_TOKEN not set"}
+
+    now_tw   = datetime.now(_TW_TZ)
+    date_str = now_tw.strftime("%Y-%m-%d")
+    lines    = [f"\n🌙 市場日報 {date_str}"]
+
+    # ── Taiwan index ─────────────────────────────────────────────────────────
+    try:
+        tw_df = yf.download("^TWII", period="5d", progress=False, auto_adjust=True)
+        if tw_df is not None and len(tw_df) >= 2:
+            c = float(tw_df["Close"].iloc[-1]); p = float(tw_df["Close"].iloc[-2])
+            chg = (c - p) / p * 100
+            lines.append(f"🇹🇼 台股加權: {chg:+.2f}% {'▲' if chg>=0 else '▼'}  {c:,.0f}")
+    except Exception:
+        pass
+
+    # ── US indices ────────────────────────────────────────────────────────────
+    for sym, label in [("SPY", "S&P500"), ("QQQ", "那斯達克")]:
+        try:
+            df = yf.download(sym, period="5d", progress=False, auto_adjust=True)
+            if df is not None and len(df) >= 2:
+                c = float(df["Close"].iloc[-1]); p = float(df["Close"].iloc[-2])
+                chg = (c - p) / p * 100
+                lines.append(f"🇺🇸 {label}: {chg:+.2f}% {'▲' if chg>=0 else '▼'}")
+        except Exception:
+            pass
+
+    # ── VIX ──────────────────────────────────────────────────────────────────
+    try:
+        vix_val = _get_vix()
+        if vix_val:
+            status = ("極度恐慌" if vix_val > 30 else "恐慌" if vix_val > 25
+                      else "中性" if vix_val > 15 else "樂觀")
+            lines.append(f"📉 VIX: {vix_val:.1f} {status}")
+    except Exception:
+        pass
+
+    # ── Grok sentiment ────────────────────────────────────────────────────────
+    try:
+        sent = _get_or_refresh_sentiment(force=False)
+        if sent and sent.get("sentiment_score") is not None:
+            sc = sent["sentiment_score"]
+            mood = ("極樂觀" if sc >= 0.5 else "偏樂觀" if sc >= 0.2
+                    else "中性" if sc > -0.2 else "偏悲觀" if sc > -0.5 else "極悲觀")
+            lines.append(f"🧠 Grok情緒: {mood} ({sc:+.2f})")
+            if sent.get("reason"):
+                lines.append(f"   {str(sent['reason'])[:55]}")
+    except Exception:
+        pass
+
+    lines.append("\n🔗 https://gigi-frontend-mu.vercel.app")
+    send_line_notify("\n".join(lines), token)
+
+    return {"status": "ok", "date": date_str}
 
 
 # ── Backtest ───────────────────────────────────────────────────────────────────

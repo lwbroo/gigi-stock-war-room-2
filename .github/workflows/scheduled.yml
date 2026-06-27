@@ -1,0 +1,79 @@
+name: Scheduled Scans & LINE Notifications
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'   # 08:00 AM Taiwan  Mon–Fri  (TW pre-market)
+    - cron: '0 13 * * 1-5'  # 09:00 PM Taiwan  Mon–Fri  (US pre-market)
+    - cron: '0 16 * * *'    # 12:00 AM Taiwan  daily    (midnight summary)
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Which job to run: tw / us / summary'
+        required: true
+        default: 'tw'
+        type: choice
+        options: [tw, us, summary]
+
+env:
+  BACKEND: https://gigi-stock-war-room-2.onrender.com
+
+jobs:
+  # ── Taiwan pre-market scan ──────────────────────────────────────────────────
+  tw-premarket:
+    name: TW Pre-Market Scan (08:00 TWN)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '0 0 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'tw')
+    steps:
+      - name: Wake backend (cold start ~30s)
+        run: |
+          curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true
+          sleep 5
+      - name: Run TW scan → LINE
+        run: |
+          curl -X POST --max-time 300 \
+            "$BACKEND/api/scheduled/scan?market=tw" \
+            -H "Content-Type: application/json" \
+            -o result.json -w "\nHTTP %{http_code}\n"
+          cat result.json
+
+  # ── US pre-market scan ──────────────────────────────────────────────────────
+  us-premarket:
+    name: US Pre-Market Scan (21:00 TWN)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '0 13 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'us')
+    steps:
+      - name: Wake backend (cold start ~30s)
+        run: |
+          curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true
+          sleep 5
+      - name: Run US scan → LINE
+        run: |
+          curl -X POST --max-time 300 \
+            "$BACKEND/api/scheduled/scan?market=us" \
+            -H "Content-Type: application/json" \
+            -o result.json -w "\nHTTP %{http_code}\n"
+          cat result.json
+
+  # ── Midnight market summary ─────────────────────────────────────────────────
+  midnight-summary:
+    name: Midnight Market Summary (00:00 TWN)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '0 16 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'summary')
+    steps:
+      - name: Wake backend (cold start ~30s)
+        run: |
+          curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true
+          sleep 5
+      - name: Run midnight summary → LINE
+        run: |
+          curl -X POST --max-time 180 \
+            "$BACKEND/api/scheduled/summary" \
+            -H "Content-Type: application/json" \
+            -o result.json -w "\nHTTP %{http_code}\n"
+          cat result.json
