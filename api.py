@@ -1114,6 +1114,7 @@ async def regression_coeffs_get(market: str = "tw"):
 def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Vectorized indicator computation for backtesting (full DataFrame at once)."""
     d = df.copy()
+    d["MA10"]  = d["Close"].rolling(10).mean()
     d["MA20"]  = d["Close"].rolling(20).mean()
     d["MA60"]  = d["Close"].rolling(60).mean()
     d["MA120"] = d["Close"].rolling(120).mean()
@@ -1147,6 +1148,7 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     dm_p = up.where((up > down) & (up > 0), 0.0)
     dm_m = down.where((down > up) & (down > 0), 0.0)
     atr  = tr.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    d["ATR14"] = atr  # absolute ATR for dynamic stop
     dip  = dm_p.ewm(alpha=1/14, min_periods=14, adjust=False).mean() / atr.replace(0, np.nan) * 100
     dim  = dm_m.ewm(alpha=1/14, min_periods=14, adjust=False).mean() / atr.replace(0, np.nan) * 100
     dx   = (dip - dim).abs() / (dip + dim).replace(0, np.nan) * 100
@@ -1303,18 +1305,43 @@ def _backtest_ticker(
         if not _bt_is_buy(row, params):
             continue
 
-        # Exit: hold_days trading-day rows after entry
-        future = df[df.index > idx].head(hold_days)
-        if len(future) < hold_days:
-            continue
-
-        entry  = float(row["Close"])
-        exit_p = float(future.iloc[-1]["Close"])
+        entry = float(row["Close"])
         if entry <= 0:
             continue
+        entry_atr = float(row["ATR14"]) if not pd.isna(row.get("ATR14", float("nan"))) else entry * 0.03
+        atr_stop  = entry - entry_atr * 1.5
 
+        # Dynamic exit: min 3 days hold, check conditions from day 3 onward
+        future_idx = [i for i in df.index if i > idx]
+        if len(future_idx) < 3:
+            continue
+
+        exit_i      = future_idx[min(hold_days - 1, len(future_idx) - 1)]
+        exit_reason = "持滿天數"
+        prev_macd_above = True  # at entry MACD > Sig (buy condition)
+
+        for j, fi in enumerate(future_idx[:hold_days]):
+            frow = df.loc[fi]
+            day  = j + 1
+            macd_above = frow["MACD"] > frow["MACD_Sig"]
+
+            if day >= 3:
+                if frow["RSI14"] > 70:
+                    exit_i = fi; exit_reason = "RSI>70超買"; break
+                if not pd.isna(frow.get("MA10", float("nan"))) and frow["Close"] < frow["MA10"]:
+                    exit_i = fi; exit_reason = "跌破MA10"; break
+                if prev_macd_above and not macd_above:
+                    exit_i = fi; exit_reason = "MACD死叉"; break
+                if frow["Close"] < atr_stop:
+                    exit_i = fi; exit_reason = "ATR停損"; break
+
+            prev_macd_above = macd_above
+
+        exit_p  = float(df.loc[exit_i]["Close"])
+        held    = future_idx.index(exit_i) + 1
+        segment = df.loc[future_idx[0]:exit_i]
+        max_dd  = float((segment["Low"].min() - entry) / entry * 100)
         ret_pct = (exit_p - entry) / entry * 100
-        max_dd  = float((future["Low"].min() - entry) / entry * 100)
 
         signals.append({
             "date":        row["date"].strftime("%Y-%m-%d"),
@@ -1323,6 +1350,9 @@ def _backtest_ticker(
             "return_pct":  round(ret_pct, 2),
             "max_dd":      round(max_dd,  2),
             "won":         ret_pct > 0,
+            "held_days":   held,
+            "exit_reason": exit_reason,
+            "atr_stop":    round(atr_stop, 2),
             "rsi14":  round(float(row["RSI14"]),  1) if not pd.isna(row["RSI14"])  else None,
             "adx14":  round(float(row["ADX14"]),  1) if not pd.isna(row["ADX14"])  else None,
             "macd_h": round(float(row["MACD_H"]), 4) if not pd.isna(row["MACD_H"]) else None,
@@ -1800,6 +1830,36 @@ async def refresh_sentiment():
         return _get_or_refresh_sentiment(force=True)
     except Exception as e:
         return {"error": str(e)}
+
+
+# ─── v9.0 VIX Market Regime ───────────────────────────────────────────────────
+_VIX_CACHE: dict = {"date": None, "vix": None}
+
+def _get_vix() -> float:
+    today = _dt.date.today().isoformat()
+    if _VIX_CACHE["date"] == today and _VIX_CACHE["vix"] is not None:
+        return _VIX_CACHE["vix"]
+    try:
+        v = yf.Ticker("^VIX")
+        level = v.fast_info.get("lastPrice") or v.info.get("regularMarketPrice") or 20.0
+        _VIX_CACHE["date"] = today
+        _VIX_CACHE["vix"]  = float(level)
+        return float(level)
+    except Exception:
+        return 20.0
+
+@app.get("/api/vix")
+async def get_vix_endpoint():
+    try:
+        level = _get_vix()
+        if level > 30:   status = "極度恐慌"; score = -20
+        elif level > 25: status = "恐慌";     score = -10
+        elif level > 20: status = "警戒";     score =  -3
+        elif level > 15: status = "中性";     score =   0
+        else:            status = "樂觀";     score =  +5
+        return {"vix": round(level, 2), "status": status, "score": score}
+    except Exception as e:
+        return {"vix": None, "status": "未知", "score": 0, "error": str(e)}
 
 
 # ─── v8.0 Claude Chat Agent ───────────────────────────────────────────────────
