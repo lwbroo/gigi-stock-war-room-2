@@ -637,13 +637,17 @@ async def put_watchlist(body: WatchlistUpdate, market: str = "tw"):
 class ScanRequest(BaseModel):
     tickers: List[str]
     market: str = "tw"
-    line_token: str = ""
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
 
-def send_line_notify(msg: str, token: str):
-    if not token: return
+def send_telegram(msg: str, bot_token: str, chat_id: str):
+    if not bot_token or not chat_id: return
     try:
-        requests.post("https://notify-api.line.me/api/notify",
-                      headers={"Authorization": f"Bearer {token}"}, data={"message": msg})
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg},
+            timeout=10
+        )
     except Exception: pass
 
 @app.post("/api/scan")
@@ -964,8 +968,8 @@ async def scan_stocks(request: ScanRequest):
             row = _no_data(ticker); row["signal"] = "ERROR"
             results.append(row)
 
-    if triggered and request.line_token:
-        send_line_notify("\n"+"\n".join(triggered), request.line_token)
+    if triggered and request.tg_bot_token and request.tg_chat_id:
+        send_telegram("\n"+"\n".join(triggered), request.tg_bot_token, request.tg_chat_id)
 
     try:
         _append_scan_log(results, request.market)
@@ -979,26 +983,27 @@ async def scan_stocks(request: ScanRequest):
 
 class NotifyRequest(BaseModel):
     message: str
-    line_token: str = ""
+    tg_bot_token: str = ""
+    tg_chat_id: str = ""
 
 @app.post("/api/notify")
 async def send_notify(req: NotifyRequest):
-    if not req.line_token: return {"status":"skipped"}
-    send_line_notify(req.message, req.line_token)
+    if not req.tg_bot_token or not req.tg_chat_id: return {"status":"skipped"}
+    send_telegram(req.message, req.tg_bot_token, req.tg_chat_id)
     return {"status":"ok"}
 
 
 # ── Scheduled Notifications ────────────────────────────────────────────────────
 
-_SCHEDULED_LINE_TOKEN = os.environ.get("LINE_NOTIFY_TOKEN", "")
+_TG_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+_TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 _TW_TZ = timezone(timedelta(hours=8))
 
 @app.post("/api/scheduled/scan")
 async def scheduled_scan(market: str = "tw"):
-    """Called by GitHub Actions 1hr before market open. Scans watchlist → LINE."""
-    token = _SCHEDULED_LINE_TOKEN
-    if not token:
-        return {"status": "skipped", "reason": "LINE_NOTIFY_TOKEN not set"}
+    """Called by GitHub Actions 1hr before market open. Scans watchlist → Telegram."""
+    if not _TG_BOT_TOKEN or not _TG_CHAT_ID:
+        return {"status": "skipped", "reason": "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"}
 
     # ── Read watchlist from GSheets ──────────────────────────────────────────
     try:
@@ -1012,7 +1017,7 @@ async def scheduled_scan(market: str = "tw"):
         return {"status": "skipped", "reason": "empty watchlist"}
 
     # ── Run scan (reuse existing endpoint logic) ──────────────────────────────
-    req = ScanRequest(tickers=tickers, market=market, line_token="")
+    req = ScanRequest(tickers=tickers, market=market)
     result = await scan_stocks(req)
     data: List[Dict[str, Any]] = result.get("data", [])
 
@@ -1055,7 +1060,7 @@ async def scheduled_scan(market: str = "tw"):
         lines.append("\n😴 今日無明顯訊號，繼續觀望")
 
     lines.append("\n🔗 https://gigi-frontend-mu.vercel.app")
-    send_line_notify("\n".join(lines), token)
+    send_telegram("\n".join(lines), _TG_BOT_TOKEN, _TG_CHAT_ID)
 
     return {"status": "ok", "market": market,
             "scanned": len(tickers), "buy": len(buy_rows),
@@ -1064,10 +1069,9 @@ async def scheduled_scan(market: str = "tw"):
 
 @app.post("/api/scheduled/summary")
 async def midnight_summary():
-    """Called by GitHub Actions at midnight Taiwan time. Daily market recap → LINE."""
-    token = _SCHEDULED_LINE_TOKEN
-    if not token:
-        return {"status": "skipped", "reason": "LINE_NOTIFY_TOKEN not set"}
+    """Called by GitHub Actions at midnight Taiwan time. Daily market recap → Telegram."""
+    if not _TG_BOT_TOKEN or not _TG_CHAT_ID:
+        return {"status": "skipped", "reason": "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"}
 
     now_tw   = datetime.now(_TW_TZ)
     date_str = now_tw.strftime("%Y-%m-%d")
@@ -1118,7 +1122,7 @@ async def midnight_summary():
         pass
 
     lines.append("\n🔗 https://gigi-frontend-mu.vercel.app")
-    send_line_notify("\n".join(lines), token)
+    send_telegram("\n".join(lines), _TG_BOT_TOKEN, _TG_CHAT_ID)
 
     return {"status": "ok", "date": date_str}
 

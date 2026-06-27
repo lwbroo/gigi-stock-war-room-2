@@ -825,7 +825,8 @@
       const [autoScanning,   setAutoScanning]   = useState(false);
       const [scanError,      setScanError]      = useState('');
       const [syncStatus,     setSyncStatus]     = useState('idle');
-      const [lineToken,      setLineToken]      = useState(() => localStorage.getItem('gigiLineToken') || '');
+      const [tgBotToken,     setTgBotToken]     = useState(() => localStorage.getItem('gigiTgBotToken') || '');
+      const [tgChatId,       setTgChatId]       = useState(() => localStorage.getItem('gigiTgChatId') || '');
       const [countdown,      setCountdown]      = useState(minsUntilMidnight());
       const [showGuide,      setShowGuide]      = useState(false);
       const [showNotes,      setShowNotes]      = useState(false);
@@ -893,13 +894,15 @@
       const userModified    = useRef({ tw:false, us:false });
       const tickersRef      = useRef([]);
       const marketRef       = useRef(market);
-      const lineTokenRef    = useRef(lineToken);
+      const tgBotTokenRef   = useRef(tgBotToken);
+      const tgChatIdRef     = useRef(tgChatId);
       const savedResultsRef = useRef(savedResults);
       const priceAlertsRef  = useRef(priceAlerts);
 
       useEffect(() => { tickersRef.current = market === 'tw' ? twTickers : usTickers; });
       useEffect(() => { marketRef.current  = market; });
-      useEffect(() => { lineTokenRef.current = lineToken; }, [lineToken]);
+      useEffect(() => { tgBotTokenRef.current = tgBotToken; }, [tgBotToken]);
+      useEffect(() => { tgChatIdRef.current   = tgChatId;   }, [tgChatId]);
       useEffect(() => { priceAlertsRef.current = priceAlerts; }, [priceAlerts]);
 
       // v7.0 — fetch sentiment on mount (cached server-side for the day)
@@ -957,8 +960,9 @@
         return condDefs.every(({ key }) => !activeConds[key] || c[key] === true);
       };
 
-      // ── persist LINE token ─────────────────────────────────────────────────────
-      useEffect(() => { try { localStorage.setItem('gigiLineToken', lineToken); } catch {} }, [lineToken]);
+      // ── persist Telegram credentials ──────────────────────────────────────────
+      useEffect(() => { try { localStorage.setItem('gigiTgBotToken', tgBotToken); } catch {} }, [tgBotToken]);
+      useEffect(() => { try { localStorage.setItem('gigiTgChatId',   tgChatId);   } catch {} }, [tgChatId]);
 
       // ── countdown ticker ───────────────────────────────────────────────────────
       useEffect(() => {
@@ -997,7 +1001,7 @@
             if (!list.length) continue;
             const scanR = await fetch(`${API_BASE}/api/scan`, {
               method: 'POST', headers: { 'Content-Type':'application/json' },
-              body: JSON.stringify({ tickers: list, market: mkt, line_token: lineTokenRef.current }),
+              body: JSON.stringify({ tickers: list, market: mkt, tg_bot_token: tgBotTokenRef.current, tg_chat_id: tgChatIdRef.current }),
             });
             if (!scanR.ok) continue;
             const scanD = await scanR.json();
@@ -1086,7 +1090,7 @@
         try {
           const r = await fetch(`${API_BASE}/api/scan`, {
             method: 'POST', headers: { 'Content-Type':'application/json' },
-            body: JSON.stringify({ tickers: currentTickers, market: mkt, line_token: lineToken }),
+            body: JSON.stringify({ tickers: currentTickers, market: mkt, tg_bot_token: tgBotToken, tg_chat_id: tgChatId }),
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || 'Scan failed');
@@ -1136,9 +1140,10 @@
 
       // ── price alerts ──────────────────────────────────────────────────────────
       const checkAlerts = async (results, mkt) => {
-        const alerts = priceAlertsRef.current;
-        const token  = lineTokenRef.current;
-        if (!token || !alerts.length) return;
+        const alerts  = priceAlertsRef.current;
+        const botTok  = tgBotTokenRef.current;
+        const chatId  = tgChatIdRef.current;
+        if (!botTok || !chatId || !alerts.length) return;
         const triggered = alerts.filter(a => {
           if (a.market !== mkt) return false;
           const row = results.find(r => r.ticker === a.ticker);
@@ -1153,7 +1158,7 @@
         try {
           await fetch(`${API_BASE}/api/notify`, {
             method: 'POST', headers: { 'Content-Type':'application/json' },
-            body: JSON.stringify({ message: '\n' + msgs.join('\n'), line_token: token }),
+            body: JSON.stringify({ message: '\n' + msgs.join('\n'), tg_bot_token: botTok, tg_chat_id: chatId }),
           });
         } catch {}
       };
@@ -1587,8 +1592,12 @@
               </div>
               {!isDefaultThresh(thresholds) && <div className="thresh-active-note">⚙️ Custom thresholds active — conditions use your Settings values</div>}
               <div className="token-row">
-                <span className="token-label">LINE Notify token (optional):</span>
-                <input className="token-input" type="password" placeholder="Paste token for LINE alerts" value={lineToken} onChange={e=>setLineToken(e.target.value)} />
+                <span className="token-label">📲 Telegram Bot Token:</span>
+                <input className="token-input" type="password" placeholder="7234567890:AAFxxx..." value={tgBotToken} onChange={e=>setTgBotToken(e.target.value)} />
+              </div>
+              <div className="token-row">
+                <span className="token-label">📲 Telegram Chat ID:</span>
+                <input className="token-input" type="text" placeholder="123456789" value={tgChatId} onChange={e=>setTgChatId(e.target.value)} />
               </div>
               <div className="auto-scan-info">🕛 Auto-scan both markets every night at 12:00 AM · next in <strong>{countdown}</strong></div>
               {scanError && <div className="error-box">⚠ {scanError}</div>}
@@ -1896,7 +1905,7 @@
                     {icon:'🧠',title:'自適應回歸模型',        desc:'每次掃描自動記錄12個指標。20天後訓練OLS回歸，系統自動學習哪個指標最有預測力，越掃越準。'},
                     {icon:'📈',title:'Live Charts',          desc:'點任意 Ticker 的 📈 開啟 TradingView 即時圖表，確認技術位置。'},
                     {icon:'💼',title:'Portfolio',            desc:'記錄持倉成本，即時對照掃描價格計算 P&L % 和 P&L $。'},
-                    {icon:'🔔',title:'Price Alerts',         desc:'設定目標價 — 掃描時自動偵測並 LINE Notify 推送。'},
+                    {icon:'🔔',title:'Price Alerts',         desc:'設定目標價 — 掃描時自動偵測並 Telegram 推送通知。'},
                     {icon:'🕛',title:'Auto-scan',            desc:'每天午夜 12:00 自動重新掃描兩個市場，隔天一開機就有最新訊號。'},
                     {icon:'🏦',title:'外資/投信',             desc:'外資買超>1000張=+15分。投信買超=+8分。法人動向是台股最強領先指標。'},
                     {icon:'🛑',title:'停損 / 目標',           desc:'Hover 個股的「綜合評論」欄自動顯示：停損=MA20×0.97，目標=現價×1.15，風險報酬比。'},
@@ -2768,7 +2777,7 @@
 
               {/* Price Alerts */}
               <div className="settings-group">
-                <div className="sg-title">🔔 Price Alerts (triggers via LINE Notify on next scan)</div>
+                <div className="sg-title">🔔 Price Alerts (triggers via Telegram on next scan)</div>
                 <div className="port-form" style={{marginBottom:12}}>
                   <div className="form-group">
                     <div className="form-lbl">Market</div>
@@ -2795,7 +2804,7 @@
                   <button className="btn btn-add" onClick={addAlert} disabled={!newAlert.ticker||!newAlert.targetPrice}>Add Alert</button>
                 </div>
                 {priceAlerts.length === 0
-                  ? <div className="settings-empty">No alerts set. Configure LINE token in Scanner tab to receive notifications.</div>
+                  ? <div className="settings-empty">No alerts set. Configure Telegram Bot Token + Chat ID in Scanner tab to receive notifications.</div>
                   : priceAlerts.map(a => (
                       <div key={a.id} className="alert-item">
                         <span style={{fontSize:14}}>{a.market==='tw'?'🇹🇼':'🇺🇸'}</span>
@@ -2809,12 +2818,12 @@
                 }
               </div>
 
-              {/* LINE Note */}
+              {/* Telegram Note */}
               <div className="settings-group">
-                <div className="sg-title">📲 LINE Notify</div>
+                <div className="sg-title">📲 Telegram 通知設定</div>
                 <div style={{fontSize:13,color:'var(--text-secondary)'}}>
-                  LINE Notify token is configured in the <strong>Scanner tab</strong> (token row below the Run Scan button).
-                  Price alerts and buy signals are both sent using that token.
+                  Telegram Bot Token 和 Chat ID 設定在 <strong>Scanner tab</strong> 下方。
+                  掃描買進訊號 + 價格警示都會透過 Telegram 發送。
                 </div>
               </div>
             </div>
