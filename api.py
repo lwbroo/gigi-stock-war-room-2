@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Dict, Any, Optional
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
@@ -1945,7 +1945,7 @@ You have direct access to the codebase and can read, edit, commit, and deploy it
 """
 
 class ChatRequest(BaseModel):
-    messages: list[dict]
+    messages: List[Dict[str, Any]]
 
 @app.post("/api/chat")
 async def chat_agent(body: ChatRequest):
