@@ -2897,6 +2897,9 @@
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     if (chatInput.trim() && !chatLoading) sendChat();
+                  } else if (e.key === 'Enter' && e.shiftKey) {
+                    e.preventDefault();
+                    setChatInput(v => v + '\n');
                   }
                 }}
                 rows={2}
