@@ -1954,39 +1954,52 @@ async def chat_agent(body: ChatRequest):
     if not GITHUB_TOKEN:
         return {"response": "GITHUB_TOKEN 未設定。請在 Render 環境變數中加入。", "actions": []}
 
-    client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    messages = [{"role": m["role"], "content": m["content"]} for m in body.messages]
-    actions: list = []
+    try:
+        client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        messages = [{"role": m["role"], "content": m["content"]} for m in body.messages]
+        actions: list = []
 
-    for _ in range(12):  # max agentic iterations
-        resp = client.messages.create(
-            model="claude-opus-4-8",
-            max_tokens=8192,
-            system=_CHAT_SYSTEM,
-            tools=_CHAT_TOOLS,
-            messages=messages
-        )
+        for _ in range(12):  # max agentic iterations
+            resp = client.messages.create(
+                model="claude-opus-4-8",
+                max_tokens=8192,
+                system=_CHAT_SYSTEM,
+                tools=_CHAT_TOOLS,
+                messages=messages
+            )
 
-        if resp.stop_reason == "end_turn":
-            text = next((b.text for b in resp.content if hasattr(b, "text")), "")
-            return {"response": text, "actions": actions}
+            if resp.stop_reason == "end_turn":
+                text = next((b.text for b in resp.content if hasattr(b, "text")), "")
+                return {"response": text, "actions": actions}
 
-        if resp.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": resp.content})
-            tool_results = []
-            for block in resp.content:
-                if block.type == "tool_use":
-                    result = _run_tool(block.name, block.input, actions)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": str(result)
-                    })
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            break
+            if resp.stop_reason == "tool_use":
+                # Convert content blocks to dicts for serialization
+                assistant_content = []
+                for b in resp.content:
+                    if b.type == "text":
+                        assistant_content.append({"type": "text", "text": b.text})
+                    elif b.type == "tool_use":
+                        assistant_content.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+                messages.append({"role": "assistant", "content": assistant_content})
 
-    return {"response": "Agent reached max iterations.", "actions": actions}
+                tool_results = []
+                for block in resp.content:
+                    if block.type == "tool_use":
+                        result = _run_tool(block.name, block.input, actions)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": str(result)
+                        })
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                break
+
+        return {"response": "Agent reached max iterations.", "actions": actions}
+
+    except Exception as e:
+        import traceback
+        return {"response": f"❌ Error: {str(e)}\n\n```\n{traceback.format_exc()[-800:]}\n```", "actions": []}
 
 
 if __name__=="__main__":
