@@ -1837,8 +1837,22 @@ _CHAT_TOOLS = [
         }
     },
     {
+        "name": "patch_file",
+        "description": "Replace a specific string in a file with a new string, then commit. Much more efficient than write_file for small edits — you only need to output the changed portion, not the entire file. Always read_file first to get the exact current text to replace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path":           {"type": "string", "description": "File path, e.g. 'frontend/index.html'"},
+                "old_str":        {"type": "string", "description": "The exact string to find and replace (must be unique in the file)"},
+                "new_str":        {"type": "string", "description": "The replacement string"},
+                "commit_message": {"type": "string", "description": "Git commit message"}
+            },
+            "required": ["path", "old_str", "new_str", "commit_message"]
+        }
+    },
+    {
         "name": "deploy_frontend",
-        "description": "Trigger Vercel deployment for the frontend. Call this after writing frontend/index.html.",
+        "description": "Trigger Vercel deployment for the frontend. Call this after patching or writing frontend/index.html.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -1870,9 +1884,10 @@ def _gh_read(path: str) -> tuple:
     content = _b64.b64decode(data["content"].replace("\n","")).decode("utf-8")
     return content, data["sha"]
 
-def _gh_write(path: str, content: str, message: str) -> str:
+def _gh_write(path: str, content: str, message: str, sha: Optional[str] = None) -> str:
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{path}"
-    _, sha = _gh_read(path)
+    if sha is None:
+        _, sha = _gh_read(path)
     payload: dict = {
         "message": message,
         "content": _b64.b64encode(content.encode("utf-8")).decode("utf-8"),
@@ -1903,6 +1918,20 @@ def _run_tool(name: str, inp: dict, actions: list) -> str:
         result = _gh_write(inp["path"], inp["content"], inp["commit_message"])
         actions.append(f"✏️ {result}")
         return result
+    if name == "patch_file":
+        content, sha = _gh_read(inp["path"])
+        if content is None:
+            return f"File not found: {inp['path']}"
+        old_str, new_str = inp["old_str"], inp["new_str"]
+        if old_str not in content:
+            return f"❌ old_str not found in {inp['path']}. Read the file again to get the exact current text."
+        count = content.count(old_str)
+        if count > 1:
+            return f"❌ old_str appears {count} times — make it more specific (add more surrounding context)."
+        new_content = content.replace(old_str, new_str, 1)
+        result = _gh_write(inp["path"], new_content, inp["commit_message"], sha)
+        actions.append(f"✏️ {result}")
+        return result
     if name == "deploy_frontend":
         if not VERCEL_DEPLOY_HOOK:
             actions.append("⚠️ VERCEL_DEPLOY_HOOK not set — skipping deploy")
@@ -1929,9 +1958,10 @@ You have direct access to the codebase and can read, edit, commit, and deploy it
 - Repo: lwbroo/gigi-stock-war-room-2
 
 ## Rules
-1. Always read the relevant file BEFORE making any edit, so you have full context.
-2. For frontend changes: read → edit → write_file → deploy_frontend. Safe to do directly.
-3. For backend changes (api.py): describe the change and confirm with the user BEFORE writing. If the backend breaks, the chat breaks too.
+1. Always read the relevant file BEFORE making any edit, so you have the exact current text.
+2. PREFER patch_file over write_file for ALL edits. patch_file only outputs the changed portion — much faster and token-efficient. Only use write_file when creating a brand new file.
+3. For frontend changes: read_file → patch_file → deploy_frontend. Safe to do directly.
+4. For backend changes (api.py): describe the change and confirm with the user BEFORE writing. If the backend breaks, the chat breaks too.
 4. Keep the Premium Dark Glass design system (dark bg, glassmorphism, Inter font, indigo accent).
 5. Never remove existing features. Additions only, unless the user explicitly asks to remove.
 6. Write concise commit messages in imperative form.
@@ -1962,7 +1992,7 @@ async def chat_agent(body: ChatRequest):
         for _ in range(12):  # max agentic iterations
             resp = client.messages.create(
                 model="claude-opus-4-8",
-                max_tokens=8192,
+                max_tokens=16000,
                 system=_CHAT_SYSTEM,
                 tools=_CHAT_TOOLS,
                 messages=messages
