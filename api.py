@@ -1452,6 +1452,18 @@ async def model_stats(market: str = "tw"):
     except Exception as e:
         return {"status":"error","reason":str(e)}
 
+@app.post("/api/model/reload")
+async def model_reload(market: str = "tw"):
+    """
+    Clear in-memory param + model caches so the next request re-reads from GSheets.
+    Called by simulate.py after pushing local optimization results.
+    """
+    _LIVE_PARAMS_CACHE.pop(market, None)
+    _LIVE_PARAMS_TS.pop(market, None)
+    _XGB_MODEL_CACHE.pop(market, None)
+    return {"status": "ok", "market": market, "message": "Cache cleared — next scan uses latest GSheets params/model"}
+
+
 # ── Backtest ───────────────────────────────────────────────────────────────────
 
 @app.post("/api/backtest")
