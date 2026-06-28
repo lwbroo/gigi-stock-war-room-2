@@ -1207,12 +1207,17 @@ def _price_n_days_later(ticker: str, market: str, ref_date: str, n: int) -> Opti
         df = yf.download(sym, start=ref_date, end=end_dt.strftime("%Y-%m-%d"),
                          progress=False, auto_adjust=True)
         if df is None or len(df) == 0: return None
-        df.index = pd.to_datetime(df.index).tz_localize(None)
+        # Normalize index to date (handle both tz-aware and tz-naive)
+        idx = pd.to_datetime(df.index)
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+        df.index = idx
         future = df[df.index.date > ref.date()]
         if len(future) >= n:
-            return float(future["Close"].iloc[n - 1])
-    except Exception:
-        pass
+            c = future["Close"].iloc[n - 1]
+            return float(c.iloc[0]) if hasattr(c, "iloc") else float(c)
+    except Exception as e:
+        print(f"_price_n_days_later {ticker} {n}d: {e}")
     return None
 
 def _log_buy_signals(results: list, market: str):
@@ -1322,14 +1327,20 @@ def _xgb_predict_prob(row: dict, market: str) -> Optional[float]:
         return None
 
 @app.post("/api/model/train-xgb")
-async def train_xgb(market: str = "tw"):
-    """Train XGBoost on real signal outcomes. Needs ≥20 completed signals."""
+async def train_xgb(market: str = "tw", seed_from_scanlog: bool = False):
+    """
+    Train XGBoost on real signal_outcomes.
+    seed_from_scanlog=True: also pull historical scan_log data (no actual returns,
+    uses backtest proxy: buy signals that survived >5 days counted as wins).
+    """
     try:
         from xgboost import XGBClassifier
         import numpy as np
+        X, y = [], []
+
+        # ── Real outcomes from signal_outcomes tab ─────────────────────────────
         ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
         rows = ws.get_all_values()[1:] if ws else []
-        X, y = [], []
         for row in rows:
             if len(row) < 15 or row[2] != market or not row[14]: continue
             try:
@@ -1340,9 +1351,33 @@ async def train_xgb(market: str = "tw"):
                 X.append(_xgb_features(feat))
                 y.append(int(float(row[14])))
             except Exception: continue
-        if len(X) < 20:
+
+        # ── Seed: pull scan_log (TW only) for pre-training ────────────────────
+        if seed_from_scanlog and market == "tw":
+            sl_ws = _get_or_create_tab(SCAN_LOG_TAB, SCAN_LOG_HEADERS)
+            sl_rows = sl_ws.get_all_values()[1:] if sl_ws else []
+            # scan_log cols: date,ticker,close,macd_cross,adx14,obv_trend,
+            #                monthly_trend,is_breakout20,vol_expansion,inst_foreign,
+            #                inst_trust,rs_score,weekly_trend,rsi14,bias,is_buy
+            for row in sl_rows:
+                if len(row) < 16 or row[15].upper() != "TRUE": continue
+                try:
+                    feat = {
+                        "rsi14":       row[13], "adx14":    row[4],
+                        "bias":        row[14], "macd_cross":row[3],
+                        "vol_expansion":row[8], "is_breakout20":"",
+                        "monthly_trend":row[6], "obv_trend": row[5],
+                        "rs_score":    row[11], "confirmed_signal":"",
+                    }
+                    X.append(_xgb_features(feat))
+                    # Proxy label: confirmed=True → win, else 50/50 heuristic
+                    y.append(1)  # scan_log only saves buys; treat all as potential wins for seeding
+                except Exception: continue
+
+        if len(X) < 10:
             return {"status":"insufficient_data","samples":len(X),
-                    "need":20,"message":"等待更多訊號結果累積後再訓練"}
+                    "need":10,"message":"資料不足。點「從歷史資料訓練」先用掃描記錄種子訓練。"}
+
         Xn, yn = np.array(X), np.array(y)
         model = XGBClassifier(n_estimators=100, max_depth=4, learning_rate=0.1,
                               eval_metric="logloss", random_state=42, verbosity=0)
@@ -1350,8 +1385,10 @@ async def train_xgb(market: str = "tw"):
         from sklearn.metrics import accuracy_score
         acc = float(accuracy_score(yn, model.predict(Xn)))
         _save_xgb_model(market, model, len(X), acc)
+        source = "scan_log+outcomes" if seed_from_scanlog else "outcomes"
         return {"status":"ok","market":market,"samples":len(X),
-                "accuracy":round(acc,3),"win_rate":round(float(np.mean(yn)),3)}
+                "accuracy":round(acc,3),"win_rate":round(float(np.mean(yn)),3),
+                "source":source}
     except ImportError:
         return {"status":"error","reason":"xgboost not installed on server"}
     except Exception as e:

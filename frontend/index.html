@@ -139,6 +139,17 @@
     .stat-card.f-warn { border-color: rgba(251,191,36,0.4);  background: rgba(251,191,36,0.07);  box-shadow: 0 0 20px rgba(251,191,36,0.06); }
     .stat-val { font-size: 24px; font-weight: 800; line-height: 1.1; letter-spacing: -0.5px; }
     .stat-lbl { font-size: 10px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; }
+    .stat-sub { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+    .stat-mini { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+    .stat-mini .stat-val { font-size: 18px; }
+    .btn-sm { font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; }
+    .btn-sm:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text-primary); }
+    .btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+    .xgb-badge { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+    .xgb-high { background: rgba(52,211,153,0.15); color: #34d399; border: 1px solid rgba(52,211,153,0.3); }
+    .xgb-mid  { background: rgba(129,140,248,0.12); color: var(--accent); border: 1px solid rgba(129,140,248,0.25); }
+    .xgb-low  { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.25); }
+    .xgb-none { background: var(--bg-2); color: var(--text-muted); border: 1px solid var(--border); }
     .sv-buy     { color: var(--green); }
     .sv-sell    { color: var(--red); }
     .sv-warn    { color: var(--yellow); }
@@ -820,12 +831,15 @@
         try { const r = await fetch(`${apiBase}/api/model/stats?market=${market}`); setStats(await r.json()); } catch {}
         setLoading(false);
       };
-      const trainXgb = async () => {
+      const trainXgb = async (seed = false) => {
         setTraining(true);
         try {
-          const r = await fetch(`${apiBase}/api/model/train-xgb?market=${market}`, { method:'POST' });
+          const url = `${apiBase}/api/model/train-xgb?market=${market}${seed ? '&seed_from_scanlog=true' : ''}`;
+          const r = await fetch(url, { method:'POST' });
           const d = await r.json();
-          alert(d.status==='ok' ? `✅ 訓練完成！${d.samples} 筆資料，準確率 ${(d.accuracy*100).toFixed(1)}%` : (d.message||d.reason||'資料不足，請等待更多訊號累積'));
+          alert(d.status==='ok'
+            ? `✅ 訓練完成！${d.samples} 筆資料，準確率 ${(d.accuracy*100).toFixed(1)}% (${d.source})`
+            : (d.message||d.reason||'訓練失敗'));
           load();
         } catch {}
         setTraining(false);
@@ -861,10 +875,17 @@
             </div>
           ) : <div style={{fontSize:13,color:'var(--text-muted)'}}>{loading?'載入中…':'點刷新載入統計'}</div>}
           <div style={{marginTop:12,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-            <button className="btn-sm" onClick={trainXgb} disabled={training} style={{background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.3)'}}>
-              {training?'訓練中…':'🤖 立即訓練 XGBoost'}
+            <button className="btn-sm" onClick={() => trainXgb(false)} disabled={training}
+              style={{background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.3)'}}>
+              {training?'訓練中…':'🤖 訓練 XGBoost'}
             </button>
-            <span style={{fontSize:11,color:'var(--text-muted)'}}>每週日自動優化參數 · 每日自動記錄訊號結果 · 20筆後啟用ML評分</span>
+            {market==='tw' && (
+              <button className="btn-sm" onClick={() => trainXgb(true)} disabled={training}
+                style={{background:'rgba(251,191,36,0.10)',color:'var(--yellow)',border:'1px solid rgba(251,191,36,0.3)'}}>
+                {training?'訓練中…':'⚡ 從歷史掃描資料種子訓練'}
+              </button>
+            )}
+            <span style={{fontSize:11,color:'var(--text-muted)'}}>每週日自動優化 · 每日記錄結果 · 累積10筆後啟用ML</span>
           </div>
         </div>
       );
@@ -1728,6 +1749,7 @@
                               <th title="Suggested stop loss (MA20×0.97)">停損</th>
                               <th title="Target price (+15%)">目標</th>
                               <th>形態</th>
+                              <th title="XGBoost ML win probability">🤖AI</th>
                             </>}
                             <th></th>
                           </tr></thead>
@@ -1883,6 +1905,13 @@
                                     <td className="td-num" style={{color:'var(--red)'}}>{row.stop_loss??'—'}</td>
                                     <td className="td-num" style={{color:'var(--green)'}}>{row.target_price??'—'}</td>
                                     <td><PatternBadge pattern={row.pattern} /></td>
+                                    <td style={{textAlign:'center'}}>
+                                      {row.xgb_prob != null
+                                        ? <span className={`xgb-badge ${row.xgb_prob>=0.75?'xgb-high':row.xgb_prob>=0.60?'xgb-mid':row.xgb_prob<0.35?'xgb-low':'xgb-none'}`}>
+                                            🤖{Math.round(row.xgb_prob*100)}%
+                                          </span>
+                                        : <span className="xgb-badge xgb-none">🤖—</span>}
+                                    </td>
                                   </>);})()}
                                   <td>
                                     <button className="btn-row-remove" onClick={() => removeFromScan(row.ticker)} title={`Remove ${row.ticker}`}>×</button>
