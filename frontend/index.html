@@ -1656,14 +1656,6 @@
                 ))}
               </div>
               {!isDefaultThresh(thresholds) && <div className="thresh-active-note">⚙️ Custom thresholds active — conditions use your Settings values</div>}
-              <div className="token-row">
-                <span className="token-label">📲 Telegram Bot Token:</span>
-                <input className="token-input" type="password" placeholder="7234567890:AAFxxx..." value={tgBotToken} onChange={e=>setTgBotToken(e.target.value)} />
-              </div>
-              <div className="token-row">
-                <span className="token-label">📲 Telegram Chat ID:</span>
-                <input className="token-input" type="text" placeholder="123456789" value={tgChatId} onChange={e=>setTgChatId(e.target.value)} />
-              </div>
               <div className="auto-scan-info">🕛 Auto-scan both markets every night at 12:00 AM · next in <strong>{countdown}</strong></div>
               {scanError && <div className="error-box">⚠ {scanError}</div>}
             </div>
@@ -2907,6 +2899,34 @@
           {activeTab === 'settings' && (
             <div className="card">
               <div className="tab-section-title">⚙️ Settings</div>
+
+              {/* Telegram */}
+              <div className="settings-group">
+                <div className="sg-title">📲 Telegram 通知設定</div>
+                <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10}}>
+                  掃描結果、開盤前訊號、每日市場摘要都會推送到這裡
+                </div>
+                <div className="token-row">
+                  <span className="token-label">Bot Token:</span>
+                  <input className="token-input" type="password" placeholder="7234567890:AAFxxx..."
+                    value={tgBotToken} onChange={e=>setTgBotToken(e.target.value)} />
+                </div>
+                <div className="token-row">
+                  <span className="token-label">Chat ID:</span>
+                  <input className="token-input" type="text" placeholder="123456789"
+                    value={tgChatId} onChange={e=>setTgChatId(e.target.value)} />
+                </div>
+                {tgBotToken && tgChatId && (
+                  <div style={{marginTop:10,fontSize:11,color:'#34d399'}}>
+                    ✅ Telegram 已設定 — 掃描時會自動通知
+                  </div>
+                )}
+                {(!tgBotToken || !tgChatId) && (
+                  <div style={{marginTop:10,fontSize:11,color:'var(--text-muted)'}}>
+                    未設定 — 填入 Bot Token 和 Chat ID 後掃描結果會推送到 Telegram
+                  </div>
+                )}
+              </div>
 
               {/* Signal Thresholds */}
               <div className="settings-group">
