@@ -8,4 +8,6 @@ gspread
 google-auth
 openai
 anthropic
+xgboost
+scikit-learn
 playwright

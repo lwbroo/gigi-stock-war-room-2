@@ -1,24 +1,28 @@
-name: Scheduled Scans & LINE Notifications
+name: Scheduled Scans & Auto-Optimize
 
 on:
   schedule:
-    - cron: '0 0 * * 1-5'   # 08:00 AM Taiwan  Mon–Fri  (TW pre-market)
-    - cron: '0 13 * * 1-5'  # 09:00 PM Taiwan  Mon–Fri  (US pre-market)
-    - cron: '0 16 * * *'    # 12:00 AM Taiwan  daily    (midnight summary)
+    - cron: '0 0 * * 1-5'    # 08:00 AM Taiwan  Mon–Fri  (TW pre-market scan)
+    - cron: '0 13 * * 1-5'   # 09:00 PM Taiwan  Mon–Fri  (US pre-market scan)
+    - cron: '0 16 * * *'     # 12:00 AM Taiwan  daily    (midnight summary)
+    - cron: '0 7 * * 1-5'    # 03:00 PM Taiwan  Mon–Fri  (TW outcome update)
+    - cron: '0 22 * * 1-5'   # 06:00 AM Taiwan  Tue–Sat  (US outcome update)
+    - cron: '0 2 * * 0'      # 10:00 AM Taiwan  Sunday   (walk-forward TW)
+    - cron: '0 4 * * 0'      # 12:00 PM Taiwan  Sunday   (walk-forward US)
   workflow_dispatch:
     inputs:
       job:
-        description: 'Which job to run: tw / us / summary'
+        description: 'Job: tw / us / summary / outcomes-tw / outcomes-us / walk-tw / walk-us'
         required: true
         default: 'tw'
         type: choice
-        options: [tw, us, summary]
+        options: [tw, us, summary, outcomes-tw, outcomes-us, walk-tw, walk-us]
 
 env:
   BACKEND: https://gigi-stock-war-room-2.onrender.com
 
 jobs:
-  # ── Taiwan pre-market scan ──────────────────────────────────────────────────
+  # ── TW pre-market scan ─────────────────────────────────────────────────────
   tw-premarket:
     name: TW Pre-Market Scan (08:00 TWN)
     runs-on: ubuntu-latest
@@ -26,19 +30,15 @@ jobs:
       github.event.schedule == '0 0 * * 1-5' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'tw')
     steps:
-      - name: Wake backend (cold start ~30s)
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: TW scan → Telegram
         run: |
-          curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true
-          sleep 5
-      - name: Run TW scan → LINE
-        run: |
-          curl -X POST --max-time 300 \
-            "$BACKEND/api/scheduled/scan?market=tw" \
-            -H "Content-Type: application/json" \
-            -o result.json -w "\nHTTP %{http_code}\n"
-          cat result.json
+          curl -X POST --max-time 300 "$BACKEND/api/scheduled/scan?market=tw" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json
 
-  # ── US pre-market scan ──────────────────────────────────────────────────────
+  # ── US pre-market scan ─────────────────────────────────────────────────────
   us-premarket:
     name: US Pre-Market Scan (21:00 TWN)
     runs-on: ubuntu-latest
@@ -46,19 +46,15 @@ jobs:
       github.event.schedule == '0 13 * * 1-5' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'us')
     steps:
-      - name: Wake backend (cold start ~30s)
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: US scan → Telegram
         run: |
-          curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true
-          sleep 5
-      - name: Run US scan → LINE
-        run: |
-          curl -X POST --max-time 300 \
-            "$BACKEND/api/scheduled/scan?market=us" \
-            -H "Content-Type: application/json" \
-            -o result.json -w "\nHTTP %{http_code}\n"
-          cat result.json
+          curl -X POST --max-time 300 "$BACKEND/api/scheduled/scan?market=us" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json
 
-  # ── Midnight market summary ─────────────────────────────────────────────────
+  # ── Midnight summary ───────────────────────────────────────────────────────
   midnight-summary:
     name: Midnight Market Summary (00:00 TWN)
     runs-on: ubuntu-latest
@@ -66,14 +62,76 @@ jobs:
       github.event.schedule == '0 16 * * *' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'summary')
     steps:
-      - name: Wake backend (cold start ~30s)
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: Midnight summary → Telegram
         run: |
-          curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true
-          sleep 5
-      - name: Run midnight summary → LINE
+          curl -X POST --max-time 180 "$BACKEND/api/scheduled/summary" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json
+
+  # ── TW outcome update (after TW market close) ──────────────────────────────
+  outcomes-tw:
+    name: TW Outcome Update (15:00 TWN)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '0 7 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'outcomes-tw')
+    steps:
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: Update TW signal outcomes
         run: |
-          curl -X POST --max-time 180 \
-            "$BACKEND/api/scheduled/summary" \
-            -H "Content-Type: application/json" \
-            -o result.json -w "\nHTTP %{http_code}\n"
-          cat result.json
+          curl -X POST --max-time 180 "$BACKEND/api/outcomes/update?market=tw" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json
+
+  # ── US outcome update (after US market close) ──────────────────────────────
+  outcomes-us:
+    name: US Outcome Update (06:00 TWN+1)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.schedule == '0 22 * * 1-5' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'outcomes-us')
+    steps:
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: Update US signal outcomes
+        run: |
+          curl -X POST --max-time 180 "$BACKEND/api/outcomes/update?market=us" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json
+
+  # ── Walk-forward TW (Sunday morning) ──────────────────────────────────────
+  walk-forward-tw:
+    name: Walk-Forward TW (10:00 TWN Sunday)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: |
+      github.event.schedule == '0 2 * * 0' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'walk-tw')
+    steps:
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: Walk-forward optimize TW params + retrain XGBoost
+        run: |
+          curl -X POST --max-time 3300 "$BACKEND/api/model/walk-forward?market=tw" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json
+
+  # ── Walk-forward US (Sunday noon) ─────────────────────────────────────────
+  walk-forward-us:
+    name: Walk-Forward US (12:00 TWN Sunday)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: |
+      github.event.schedule == '0 4 * * 0' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.job == 'walk-us')
+    steps:
+      - name: Wake backend
+        run: curl -sf --max-time 60 "$BACKEND/api/vix" > /dev/null || true && sleep 5
+      - name: Walk-forward optimize US params + retrain XGBoost
+        run: |
+          curl -X POST --max-time 3300 "$BACKEND/api/model/walk-forward?market=us" \
+            -H "Content-Type: application/json" -o r.json -w "\nHTTP %{http_code}\n"
+          cat r.json

@@ -791,6 +791,13 @@
         else if (row.pct_from_52high < -40) { score -= 5; d(`距年高${row.pct_from_52high.toFixed(0)}%`, -5); }
       }
 
+      // ── v10.0 XGBoost ML 勝率預測 ──
+      if (row.xgb_prob != null) {
+        if      (row.xgb_prob >= 0.75) { score += 20; reasons.push(`🤖 AI ${Math.round(row.xgb_prob*100)}%`); d(`XGBoost勝率 ${Math.round(row.xgb_prob*100)}%`, +20); }
+        else if (row.xgb_prob >= 0.60) { score += 10; d(`XGBoost勝率 ${Math.round(row.xgb_prob*100)}%`, +10); }
+        else if (row.xgb_prob <  0.35) { score -= 15; reasons.push('🤖 AI低勝率'); d(`XGBoost勝率低 ${Math.round(row.xgb_prob*100)}%`, -15); }
+      }
+
       // ── Verdict (thresholds adjusted for v6) ──
       let label, color, bg;
       if      (score >= 90) { label = '🚀 強力買進'; color = '#56d364'; bg = 'rgba(63,185,80,0.18)'; }
@@ -801,6 +808,66 @@
 
       const topReasons = reasons.slice(0, 5).join(' · ');
       return { label, color, bg, score, reasons: topReasons, allDetails, gc };
+    }
+
+    /* ── v10.0 Auto-Learn Panel ── */
+    function AutoLearnPanel({ market, apiBase }) {
+      const [stats, setStats]     = React.useState(null);
+      const [loading, setLoading] = React.useState(false);
+      const [training, setTraining] = React.useState(false);
+      const load = async () => {
+        setLoading(true);
+        try { const r = await fetch(`${apiBase}/api/model/stats?market=${market}`); setStats(await r.json()); } catch {}
+        setLoading(false);
+      };
+      const trainXgb = async () => {
+        setTraining(true);
+        try {
+          const r = await fetch(`${apiBase}/api/model/train-xgb?market=${market}`, { method:'POST' });
+          const d = await r.json();
+          alert(d.status==='ok' ? `✅ 訓練完成！${d.samples} 筆資料，準確率 ${(d.accuracy*100).toFixed(1)}%` : (d.message||d.reason||'資料不足，請等待更多訊號累積'));
+          load();
+        } catch {}
+        setTraining(false);
+      };
+      React.useEffect(() => { load(); }, [market]);
+      const pLabel = v => (!v||typeof v==='string') ? null : `RSI ${v.rsi_lo}–${v.rsi_hi} / ADX ${v.adx_lo}–${v.adx_hi}`;
+      return (
+        <div className="card" style={{marginBottom:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+            <span style={{fontSize:14,fontWeight:700}}>🤖 v10.0 自動學習系統</span>
+            <button className="btn-sm" onClick={load} disabled={loading} style={{marginLeft:'auto'}}>{loading?'載入中…':'↻ 刷新'}</button>
+          </div>
+          {stats?.status==='ok' ? (
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(155px,1fr))',gap:10}}>
+              {[
+                { val: stats.real_win_rate!=null ? `${(stats.real_win_rate*100).toFixed(1)}%` : '—',
+                  lbl: '真實勝率', sub: stats.total_signals!=null ? `${stats.total_signals} 筆訊號` : '等待累積',
+                  col: stats.real_win_rate>=0.8?'var(--green)':stats.real_win_rate>=0.6?'var(--yellow)':'var(--red)' },
+                { val: stats.avg_return_10d!=null ? `${stats.avg_return_10d>0?'+':''}${stats.avg_return_10d}%` : '—',
+                  lbl: '平均10日報酬', sub: '真實結果追蹤', col: 'var(--accent)' },
+                { val: stats.xgb_trained_at ? '✅ 已啟用' : '⏳ 待訓練',
+                  lbl: 'XGBoost ML', sub: stats.xgb_trained_at ? `${stats.xgb_samples||'?'}筆 / ${stats.xgb_accuracy?(stats.xgb_accuracy*100).toFixed(0)+'%':'?'}` : '需 ≥20 筆結果',
+                  col: stats.xgb_trained_at?'var(--green)':'var(--text-muted)' },
+                { val: <span style={{fontSize:11}}>{pLabel(stats.live_params)||'預設值'}</span>,
+                  lbl: '當前掃描參數', sub: '每週日自動優化', col: 'var(--text-secondary)' },
+              ].map((s,i) => (
+                <div key={i} className="stat-mini">
+                  <div className="stat-val" style={{color:s.col,fontSize:s.val?.type?12:undefined}}>{s.val}</div>
+                  <div className="stat-lbl">{s.lbl}</div>
+                  <div className="stat-sub">{s.sub}</div>
+                </div>
+              ))}
+            </div>
+          ) : <div style={{fontSize:13,color:'var(--text-muted)'}}>{loading?'載入中…':'點刷新載入統計'}</div>}
+          <div style={{marginTop:12,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+            <button className="btn-sm" onClick={trainXgb} disabled={training} style={{background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.3)'}}>
+              {training?'訓練中…':'🤖 立即訓練 XGBoost'}
+            </button>
+            <span style={{fontSize:11,color:'var(--text-muted)'}}>每週日自動優化參數 · 每日自動記錄訊號結果 · 20筆後啟用ML評分</span>
+          </div>
+        </div>
+      );
     }
 
     /* ── Pattern badge ── */
@@ -2446,7 +2513,10 @@
           {/* ═══════════════ MODEL TAB ═══════════════ */}
           {activeTab === 'model' && (
             <div>
-              <div className="tab-section-title" style={{marginBottom:4}}>🧠 自適應回歸模型</div>
+              {/* ── v10.0 Auto-Optimize Stats ── */}
+              <AutoLearnPanel market={market} apiBase={API_BASE} />
+
+              <div className="tab-section-title" style={{marginBottom:4,marginTop:24}}>🧠 自適應回歸模型</div>
               <p style={{fontSize:13,color:'var(--text-muted)',marginBottom:20}}>
                 每次掃描自動記錄所有指標數據。10天後對照實際漲跌，用 OLS 多因子回歸找出哪些指標最有預測力，動態調整各指標權重。
               </p>

@@ -968,6 +968,10 @@ async def scan_stocks(request: ScanRequest):
             row = _no_data(ticker); row["signal"] = "ERROR"
             results.append(row)
 
+    # ── v10.0 enhancements ────────────────────────────────────────────────────
+    for r in results:
+        r["xgb_prob"] = _xgb_predict_prob(r, request.market)
+
     if triggered and request.tg_bot_token and request.tg_chat_id:
         send_telegram("\n"+"\n".join(triggered), request.tg_bot_token, request.tg_chat_id)
 
@@ -975,6 +979,11 @@ async def scan_stocks(request: ScanRequest):
         _append_scan_log(results, request.market)
     except Exception as e:
         print(f"scan_log (non-fatal): {e}")
+
+    try:
+        _log_buy_signals(results, request.market)
+    except Exception as e:
+        print(f"log_buy_signals (non-fatal): {e}")
 
     return {"status":"success","data":results}
 
@@ -1126,6 +1135,285 @@ async def midnight_summary():
 
     return {"status": "ok", "date": date_str}
 
+
+# ── v10.0 Auto-Optimize: Outcome Tracking + Walk-Forward + XGBoost ────────────
+import pickle, base64 as _b64
+
+_OUTCOME_TAB      = "signal_outcomes"
+_OUTCOME_HDR      = ["signal_date","ticker","market","close_signal",
+                     "rsi14","adx14","bias","macd_cross","vol_expansion","confirmed",
+                     "close_5d","return_5d","close_10d","return_10d","win"]
+_MODEL_PARAMS_TAB = "model_params"
+_MODEL_PARAMS_HDR = ["market","rsi_lo","rsi_hi","adx_lo","adx_hi",
+                     "bias_lo","bias_hi","macd_h_pct_min","win_rate","sharpe","updated"]
+_MODEL_STORE_TAB  = "model_store"
+_MODEL_STORE_HDR  = ["market","model_b64","trained_at","n_samples","accuracy"]
+
+_LIVE_PARAMS_CACHE: Dict[str, dict] = {}
+_LIVE_PARAMS_TS:    Dict[str, float] = {}
+_XGB_MODEL_CACHE:   Dict[str, Any]   = {}
+
+# ── Live params (GSheets-backed, 1-hour cache) ────────────────────────────────
+
+def _get_live_params(market: str) -> Optional[dict]:
+    now = time.time()
+    if market in _LIVE_PARAMS_CACHE and now - _LIVE_PARAMS_TS.get(market, 0) < 3600:
+        return _LIVE_PARAMS_CACHE[market]
+    try:
+        ws = _get_or_create_tab(_MODEL_PARAMS_TAB, _MODEL_PARAMS_HDR)
+        if not ws: return None
+        for row in ws.get_all_values()[1:]:
+            if len(row) >= 8 and row[0] == market:
+                p = {"rsi_lo":float(row[1]),"rsi_hi":float(row[2]),
+                     "adx_lo":float(row[3]),"adx_hi":float(row[4]),
+                     "bias_lo":float(row[5]),"bias_hi":float(row[6]),
+                     "macd_h_pct_min":float(row[7])}
+                _LIVE_PARAMS_CACHE[market] = p
+                _LIVE_PARAMS_TS[market] = now
+                return p
+    except Exception as e:
+        print(f"_get_live_params: {e}")
+    return None
+
+def _save_live_params(market: str, params: dict, win_rate: float, sharpe: float):
+    try:
+        ws = _get_or_create_tab(_MODEL_PARAMS_TAB, _MODEL_PARAMS_HDR)
+        if not ws: return
+        ts = datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M")
+        new_row = [market, params["rsi_lo"], params["rsi_hi"],
+                   params["adx_lo"], params["adx_hi"],
+                   params["bias_lo"], params["bias_hi"],
+                   params["macd_h_pct_min"], round(win_rate,4), round(sharpe,4), ts]
+        rows = ws.get_all_values()
+        for i, r in enumerate(rows[1:], 2):
+            if r and r[0] == market:
+                ws.update(f"A{i}", [new_row])
+                _LIVE_PARAMS_CACHE[market] = params
+                _LIVE_PARAMS_TS[market] = time.time()
+                return
+        ws.append_rows([new_row], value_input_option="RAW")
+        _LIVE_PARAMS_CACHE[market] = params
+        _LIVE_PARAMS_TS[market] = time.time()
+    except Exception as e:
+        print(f"_save_live_params: {e}")
+
+# ── Outcome tracking ──────────────────────────────────────────────────────────
+
+def _price_n_days_later(ticker: str, market: str, ref_date: str, n: int) -> Optional[float]:
+    try:
+        sym = ticker if "." in ticker else (f"{ticker}.TW" if market == "tw" else ticker)
+        ref = datetime.strptime(ref_date, "%Y-%m-%d")
+        end_dt = ref + timedelta(days=n * 2 + 14)
+        df = yf.download(sym, start=ref_date, end=end_dt.strftime("%Y-%m-%d"),
+                         progress=False, auto_adjust=True)
+        if df is None or len(df) == 0: return None
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        future = df[df.index.date > ref.date()]
+        if len(future) >= n:
+            return float(future["Close"].iloc[n - 1])
+    except Exception:
+        pass
+    return None
+
+def _log_buy_signals(results: list, market: str):
+    """Write today's buy signals to signal_outcomes tab (outcomes filled later)."""
+    buys = [r for r in results if r.get("signal") == "YES"]
+    if not buys: return
+    try:
+        ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
+        if not ws: return
+        today = datetime.now(_TW_TZ).strftime("%Y-%m-%d")
+        rows = [[today, r["ticker"], market, r.get("close",""),
+                 r.get("rsi14",""), r.get("adx14",""), r.get("bias",""),
+                 r.get("macd_cross",""), str(r.get("vol_expansion","")),
+                 str(r.get("confirmed_signal","")),
+                 "","","","",""]  # outcomes filled by /api/outcomes/update
+                for r in buys]
+        ws.append_rows(rows, value_input_option="RAW")
+    except Exception as e:
+        print(f"_log_buy_signals: {e}")
+
+@app.post("/api/outcomes/update")
+async def update_outcomes(market: str = "tw"):
+    """Fill 5d/10d actual returns for signals that are 15+ calendar days old."""
+    try:
+        ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
+        if not ws: return {"status":"error","reason":"sheet unavailable"}
+        all_rows = ws.get_all_values()
+        if len(all_rows) < 2: return {"status":"ok","updated":0}
+        today = datetime.now(_TW_TZ).date()
+        updated = 0
+        for i, row in enumerate(all_rows[1:], 2):
+            if len(row) < 10 or row[2] != market: continue
+            if row[10]: continue  # already has close_5d
+            try:
+                sig_dt = datetime.strptime(row[0], "%Y-%m-%d").date()
+                if (today - sig_dt).days < 15: continue
+                close_sig = float(row[3]) if row[3] else None
+                if not close_sig: continue
+                c5  = _price_n_days_later(row[1], market, row[0], 5)
+                c10 = _price_n_days_later(row[1], market, row[0], 10)
+                r5  = round((c5 / close_sig - 1) * 100, 2) if c5 else ""
+                r10 = round((c10 / close_sig - 1) * 100, 2) if c10 else ""
+                win = 1 if (isinstance(r10, float) and r10 >= 3.0) else 0
+                ws.update(f"K{i}:O{i}", [[c5 or "", r5, c10 or "", r10, win]])
+                updated += 1
+            except Exception as e:
+                print(f"outcome row {i}: {e}")
+        return {"status":"ok","market":market,"updated":updated}
+    except Exception as e:
+        return {"status":"error","reason":str(e)}
+
+# ── XGBoost model ─────────────────────────────────────────────────────────────
+
+def _xgb_features(row: dict) -> List[float]:
+    macd_map = {"golden":2.0,"above":1.0,"none":0.0,"below":-1.0,"death":-2.0}
+    return [
+        float(row.get("rsi14") or 50),
+        float(row.get("adx14") or 20),
+        float(row.get("bias") or 0),
+        macd_map.get(str(row.get("macd_cross") or "none"), 0.0),
+        1.0 if str(row.get("vol_expansion")) in ("True","true","1") else 0.0,
+        1.0 if str(row.get("is_breakout20")) in ("True","true","1") else 0.0,
+        1.0 if str(row.get("monthly_trend")) in ("True","true","1","True") else 0.0,
+        1.0 if str(row.get("obv_trend"))=="rising" else (-1.0 if str(row.get("obv_trend"))=="falling" else 0.0),
+        min(float(row.get("rs_score") or 0), 3.0),
+        1.0 if str(row.get("confirmed_signal")) in ("True","true","1") else 0.0,
+    ]
+
+def _save_xgb_model(market: str, model: Any, n_samples: int, accuracy: float):
+    try:
+        ws = _get_or_create_tab(_MODEL_STORE_TAB, _MODEL_STORE_HDR)
+        if not ws: return
+        b64 = _b64.b64encode(pickle.dumps(model)).decode()
+        ts = datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M")
+        new_row = [market, b64, ts, n_samples, round(accuracy, 4)]
+        rows = ws.get_all_values()
+        for i, r in enumerate(rows[1:], 2):
+            if r and r[0] == market:
+                ws.update(f"A{i}", [new_row]); _XGB_MODEL_CACHE[market] = model; return
+        ws.append_rows([new_row], value_input_option="RAW")
+        _XGB_MODEL_CACHE[market] = model
+    except Exception as e:
+        print(f"_save_xgb_model: {e}")
+
+def _load_xgb_model(market: str) -> Optional[Any]:
+    if market in _XGB_MODEL_CACHE: return _XGB_MODEL_CACHE[market]
+    try:
+        ws = _get_or_create_tab(_MODEL_STORE_TAB, _MODEL_STORE_HDR)
+        if not ws: return None
+        for row in ws.get_all_values()[1:]:
+            if len(row) >= 2 and row[0] == market:
+                model = pickle.loads(_b64.b64decode(row[1]))
+                _XGB_MODEL_CACHE[market] = model
+                return model
+    except Exception as e:
+        print(f"_load_xgb_model: {e}")
+    return None
+
+def _xgb_predict_prob(row: dict, market: str) -> Optional[float]:
+    model = _load_xgb_model(market)
+    if model is None: return None
+    try:
+        import numpy as np
+        prob = float(model.predict_proba(np.array([_xgb_features(row)]))[0][1])
+        return round(prob, 3)
+    except Exception:
+        return None
+
+@app.post("/api/model/train-xgb")
+async def train_xgb(market: str = "tw"):
+    """Train XGBoost on real signal outcomes. Needs ≥20 completed signals."""
+    try:
+        from xgboost import XGBClassifier
+        import numpy as np
+        ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
+        rows = ws.get_all_values()[1:] if ws else []
+        X, y = [], []
+        for row in rows:
+            if len(row) < 15 or row[2] != market or not row[14]: continue
+            try:
+                feat = {"rsi14":row[4],"adx14":row[5],"bias":row[6],
+                        "macd_cross":row[7],"vol_expansion":row[8],
+                        "is_breakout20":"","monthly_trend":"","obv_trend":"",
+                        "rs_score":0,"confirmed_signal":row[9]}
+                X.append(_xgb_features(feat))
+                y.append(int(float(row[14])))
+            except Exception: continue
+        if len(X) < 20:
+            return {"status":"insufficient_data","samples":len(X),
+                    "need":20,"message":"等待更多訊號結果累積後再訓練"}
+        Xn, yn = np.array(X), np.array(y)
+        model = XGBClassifier(n_estimators=100, max_depth=4, learning_rate=0.1,
+                              eval_metric="logloss", random_state=42, verbosity=0)
+        model.fit(Xn, yn)
+        from sklearn.metrics import accuracy_score
+        acc = float(accuracy_score(yn, model.predict(Xn)))
+        _save_xgb_model(market, model, len(X), acc)
+        return {"status":"ok","market":market,"samples":len(X),
+                "accuracy":round(acc,3),"win_rate":round(float(np.mean(yn)),3)}
+    except ImportError:
+        return {"status":"error","reason":"xgboost not installed on server"}
+    except Exception as e:
+        return {"status":"error","reason":str(e)}
+
+# ── Walk-Forward Auto-Optimization ────────────────────────────────────────────
+
+@app.post("/api/model/walk-forward")
+async def walk_forward(market: str = "tw"):
+    """Re-run grid search on last 6 months. Save best params → scan auto-uses them."""
+    try:
+        ws_t = _get_sheet_tab(market)
+        tickers = [t.strip() for t in ws_t.col_values(1)
+                   if t.strip() and t.strip() != _TICKER_COL]
+        if not tickers: return {"status":"error","reason":"empty watchlist"}
+        now_str = datetime.now().strftime("%Y-%m-%d")
+        six_mo  = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+        req = BacktestFullRequest(tickers=tickers[:40], market=market,
+                                  start_date=six_mo, end_date=now_str, hold_days=10)
+        result = await backtest_gridsearch(req)
+        if "error" in result:
+            return {"status":"error","reason":result["error"]}
+        top = result.get("top_results", [])
+        if not top: return {"status":"error","reason":"no results"}
+        best_p = top[0]["params"]
+        _save_live_params(market, best_p,
+                         float(top[0].get("win_rate",0)),
+                         float(top[0].get("sharpe",0) or 0))
+        retrain = await train_xgb(market=market)
+        return {"status":"ok","market":market,"best_params":best_p,
+                "win_rate":top[0].get("win_rate"),"sharpe":top[0].get("sharpe"),
+                "xgb_retrain":retrain.get("status")}
+    except Exception as e:
+        import traceback
+        return {"status":"error","reason":str(e),"trace":traceback.format_exc()[-400:]}
+
+@app.get("/api/model/stats")
+async def model_stats(market: str = "tw"):
+    """Real win rate from tracked outcomes + current model info."""
+    try:
+        out: Dict[str, Any] = {}
+        live = _get_live_params(market)
+        out["live_params"] = live or "defaults"
+        ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
+        rows = [r for r in (ws.get_all_values()[1:] if ws else [])
+                if len(r) >= 15 and r[2] == market and r[14]]
+        if rows:
+            wins = sum(1 for r in rows if r[14] == "1")
+            rets = [float(r[13]) for r in rows if r[13]]
+            out["real_win_rate"]  = round(wins / len(rows), 3)
+            out["total_signals"]  = len(rows)
+            out["avg_return_10d"] = round(sum(rets) / len(rets), 2) if rets else None
+        ws2 = _get_or_create_tab(_MODEL_STORE_TAB, _MODEL_STORE_HDR)
+        for r in (ws2.get_all_values()[1:] if ws2 else []):
+            if r and r[0] == market:
+                out["xgb_trained_at"] = r[2] if len(r) > 2 else None
+                out["xgb_samples"]    = r[3] if len(r) > 3 else None
+                out["xgb_accuracy"]   = r[4] if len(r) > 4 else None
+                break
+        return {"status":"ok","market":market,**out}
+    except Exception as e:
+        return {"status":"error","reason":str(e)}
 
 # ── Backtest ───────────────────────────────────────────────────────────────────
 
@@ -1325,6 +1613,8 @@ US_DEFAULT_PARAMS: dict = {   # Grid Search BEST: RSI 60-65, ADX 18-30, MACD_H �
 }
 
 def _get_market_params(market: str) -> dict:
+    live = _get_live_params(market)
+    if live: return live
     return TW_BEST_PARAMS if market == "tw" else US_DEFAULT_PARAMS
 
 _MACD_H_COLS = {33: "MACD_H_p33", 40: "MACD_H_p40",
