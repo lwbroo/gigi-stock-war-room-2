@@ -1558,6 +1558,7 @@
           <div className="app-nav">
             {[
               { id:'scanner',   icon:'📡', label:'Scanner'   },
+              { id:'watchlist', icon:'📋', label:'Watchlist' },
               { id:'portfolio', icon:'💼', label:'Portfolio' },
               { id:'backtest',  icon:'🧪', label:'Backtest'  },
               { id:'model',     icon:'🧠', label:'Model'     },
@@ -1629,40 +1630,15 @@
               </div>
             )}
 
-            {/* Watchlist */}
-            <div className="card">
-              <div className="card-label">{meta.flag} {meta.label} Watchlist — {tickers.length} stock{tickers.length!==1?'s':''}</div>
-              <div className="input-row">
-                <input className="ticker-input" type="text" placeholder={meta.placeholder} value={newTicker} onChange={e=>setNewTicker(e.target.value)} onKeyDown={onKey} />
-                <button className="btn btn-add" onClick={addTicker} disabled={!newTicker.trim()}>Add</button>
-                <button className="btn btn-ghost" onClick={reloadFromSheet} title="Reload from Google Sheets">↻ Reload</button>
-              </div>
-              <div className="chip-list">
-                {tickers.length === 0
-                  ? <span className="empty">No tickers yet — add one above.</span>
-                  : tickers.map(t => (
-                      <span key={t} className="chip">{t}
-                        <button className="chip-x" onClick={() => removeTicker(t)}>×</button>
-                      </span>
-                    ))
-                }
-              </div>
-              <div className="import-divider">
-                <div className="import-label">⚡ Smart Ticker Import</div>
-                <textarea className="import-area"
-                  placeholder={"Paste InvestingPro table here to auto-filter undervalued stocks!\n(估值偏低 or 便宜價 = imported; 公允 = skipped)\nOr paste any ticker list — one per line or space-separated."}
-                  value={importText} onChange={e=>setImportText(e.target.value)} />
-                <div className="import-row">
-                  <button className="btn btn-add" onClick={parseImport} disabled={!importText.trim()}>⚡ Import</button>
-                  {importText && <button className="btn btn-ghost" onClick={() => setImportText('')}>Clear</button>}
-                  {importFeedback && <span className="import-feedback">{importFeedback}</span>}
-                </div>
-              </div>
-            </div>
-
             {/* Scanner */}
             <div className="card">
-              <div className="card-label">{meta.flag} MA20 + Volume Scanner</div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                <div className="card-label" style={{marginBottom:0}}>{meta.flag} MA20 + Volume Scanner</div>
+                <button className="btn-sm" onClick={()=>setActiveTab('watchlist')}
+                  style={{fontSize:11,color:'var(--text-muted)'}}>
+                  📋 {tickers.length} stocks in watchlist →
+                </button>
+              </div>
               <div className="scan-row">
                 <button className="btn btn-scan" onClick={runScan} disabled={scanning||autoScanning||!tickers.length}>
                   {scanning ? <><span className="spinner"></span>Scanning…</> : '▶ Run Scan'}
@@ -2153,6 +2129,87 @@
           </>)}
 
           {/* ═══════════════ PORTFOLIO TAB ═══════════════ */}
+          {/* ═══════════════ WATCHLIST TAB ═══════════════ */}
+          {activeTab === 'watchlist' && (
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
+              {(['tw','us']).map(mkt => {
+                const m = MARKET_META[mkt];
+                const tkrs = mkt==='tw' ? twTickers : usTickers;
+                const setTkrs = mkt==='tw' ? setTwTickers : setUsTickers;
+                const lsKey  = m.lsKey;
+                const [localNew, setLocalNew] = [newTicker, setNewTicker];
+
+                const addLocal = () => {
+                  const t = newTicker.trim().toUpperCase();
+                  if (!t || tkrs.includes(t)) { setNewTicker(''); return; }
+                  const next = [...tkrs, t];
+                  setTkrs(next); saveLS(lsKey, next);
+                  fetch(`${API_BASE}/api/watchlist`, { method:'PUT', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({tickers: next, market: mkt}) });
+                  setNewTicker('');
+                };
+                const removeLocal = (t) => {
+                  const next = tkrs.filter(x=>x!==t);
+                  setTkrs(next); saveLS(lsKey, next);
+                  fetch(`${API_BASE}/api/watchlist`, { method:'PUT', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({tickers: next, market: mkt}) });
+                };
+                const reloadLocal = async () => {
+                  try {
+                    const r = await fetch(`${API_BASE}/api/watchlist?market=${mkt}`);
+                    const d = await r.json();
+                    setTkrs(d.tickers||[]); saveLS(lsKey, d.tickers||[]);
+                  } catch {}
+                };
+
+                return (
+                  <div key={mkt} className="card" style={{flex:'1 1 340px',minWidth:300}}>
+                    <div className="card-label">{m.flag} {m.label} Watchlist
+                      <span style={{marginLeft:8,fontSize:11,fontWeight:400,color:'var(--text-muted)'}}>{tkrs.length} stocks</span>
+                    </div>
+                    <div className="input-row">
+                      <input className="ticker-input" type="text" placeholder={m.placeholder}
+                        value={mkt===market ? newTicker : ''}
+                        onChange={e => { if(mkt===market) setNewTicker(e.target.value); }}
+                        onKeyDown={e => { if(e.key==='Enter' && mkt===market) addLocal(); }} />
+                      <button className="btn btn-add" onClick={addLocal} disabled={mkt!==market || !newTicker.trim()}>Add</button>
+                      <button className="btn btn-ghost" onClick={reloadLocal} title="Reload from GSheets">↻</button>
+                    </div>
+                    <div className="chip-list" style={{maxHeight:220,overflowY:'auto'}}>
+                      {tkrs.length===0
+                        ? <span className="empty">No tickers yet.</span>
+                        : tkrs.map(t=>(
+                            <span key={t} className="chip">{t}
+                              <button className="chip-x" onClick={()=>removeLocal(t)}>×</button>
+                            </span>
+                          ))
+                      }
+                    </div>
+                    <div className="import-divider">
+                      <div className="import-label">⚡ Smart Import</div>
+                      <textarea className="import-area" rows={3}
+                        placeholder={mkt==='tw'
+                          ? '貼上 InvestingPro 表格（估值偏低/便宜價自動匯入）或直接貼股票代碼'
+                          : 'Paste ticker list — one per line or space-separated'}
+                        value={mkt===market ? importText : ''}
+                        onChange={e => { if(mkt===market) setImportText(e.target.value); }} />
+                      <div className="import-row">
+                        <button className="btn btn-add" onClick={parseImport} disabled={mkt!==market || !importText.trim()}>⚡ Import</button>
+                        {mkt===market && importText && <button className="btn btn-ghost" onClick={()=>setImportText('')}>Clear</button>}
+                        {mkt===market && importFeedback && <span className="import-feedback">{importFeedback}</span>}
+                      </div>
+                    </div>
+                    {mkt!==market && (
+                      <div style={{marginTop:8,fontSize:11,color:'var(--text-muted)',textAlign:'center'}}>
+                        切換到 {m.flag} 市場後可編輯
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {activeTab === 'portfolio' && (
             <div className="card">
               <div className="tab-section-title">💼 Portfolio</div>

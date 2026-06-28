@@ -59,6 +59,10 @@ _MODEL_PARAMS_HDR = ["market","rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bia
                      "macd_h_pct_min","win_rate","sharpe","updated"]
 _MODEL_STORE_TAB  = "model_store"
 _MODEL_STORE_HDR  = ["market","model_b64","trained_at","n_samples","accuracy"]
+_SIM_RESULTS_TAB  = "sim_results"
+_SIM_RESULTS_HDR  = ["run_at","market","years","n_tickers","n_signals","base_wr",
+                     "opt_wr","sharpe","n_opt_signals","xgb_accuracy","xgb_samples",
+                     "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min","notes"]
 
 TW_BEST_PARAMS   = {"rsi_lo":52,"rsi_hi":60,"bias_lo":4,"bias_hi":8,"adx_lo":18,"adx_hi":35,"macd_h_pct_min":60}
 US_DEFAULT_PARAMS = {"rsi_lo":60,"rsi_hi":65,"bias_lo":4,"bias_hi":8,"adx_lo":18,"adx_hi":30,"macd_h_pct_min":60}
@@ -132,6 +136,34 @@ def _save_xgb_model(market: str, model: Any, n_samples: int, accuracy: float):
             return
     ws.append_rows([new_row], value_input_option="RAW")
     print(f"  + Inserted model_store [{market}] ({n_samples} samples, acc={accuracy:.3f})")
+
+def _save_sim_result(market: str, years: int, n_tickers: int, all_signals: list,
+                     best: Optional[dict], acc: float, notes: str = ""):
+    """Append one row to sim_results tab as proof of each local simulation run."""
+    try:
+        ws = _get_or_create_tab(_SIM_RESULTS_TAB, _SIM_RESULTS_HDR)
+        total = len(all_signals)
+        base_wr = round(sum(1 for s in all_signals if s["won"]) / total, 4) if total else 0
+        p = best["params"] if best else {}
+        row = [
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            market, years, n_tickers, total,
+            base_wr,
+            best["win_rate"] if best else "",
+            best["sharpe"]   if best else "",
+            best["n_signals"] if best else "",
+            round(acc, 4) if acc else "",
+            total,
+            p.get("rsi_lo",""), p.get("rsi_hi",""),
+            p.get("adx_lo",""), p.get("adx_hi",""),
+            p.get("bias_lo",""), p.get("bias_hi",""),
+            p.get("macd_h_pct_min",""),
+            notes,
+        ]
+        ws.append_rows([row], value_input_option="RAW")
+        print(f"  + Logged to sim_results [{market}]")
+    except Exception as e:
+        print(f"  sim_results write failed: {e}")
 
 def _notify_cloud_reload(market: str):
     """Tell cloud to clear its param/model cache so new GSheets data is used immediately."""
@@ -494,6 +526,8 @@ def main():
         if not args.no_reload:
             print("  Notifying cloud to reload...")
             _notify_cloud_reload(market)
+
+        _save_sim_result(market, args.years, len(tickers), all_signals, best, acc if model else 0)
 
     total_time = int(time.time() - (t0 if 'market' in dir() and 't0' in dir() else time.time()))
     print(f"\nDone! Total time: {total_time//60}m{total_time%60:02d}s")
