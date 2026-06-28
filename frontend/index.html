@@ -2133,7 +2133,7 @@
           {activeTab === 'watchlist' && (
             <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-start'}}>
               {(['tw','us']).map(mkt => {
-                const m = MARKET_META[mkt];
+                const m = MARKETS[mkt];
                 const tkrs = mkt==='tw' ? twTickers : usTickers;
                 const setTkrs = mkt==='tw' ? setTwTickers : setUsTickers;
                 const lsKey  = m.lsKey;
