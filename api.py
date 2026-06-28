@@ -1137,7 +1137,7 @@ async def midnight_summary():
 
 
 # ── v10.0 Auto-Optimize: Outcome Tracking + Walk-Forward + XGBoost ────────────
-import pickle, base64 as _b64
+import pickle, base64 as _b64, gzip as _gzip
 
 _OUTCOME_TAB      = "signal_outcomes"
 _OUTCOME_HDR      = ["signal_date","ticker","market","close_signal",
@@ -1290,7 +1290,7 @@ def _save_xgb_model(market: str, model: Any, n_samples: int, accuracy: float):
     try:
         ws = _get_or_create_tab(_MODEL_STORE_TAB, _MODEL_STORE_HDR)
         if not ws: return
-        b64 = _b64.b64encode(pickle.dumps(model)).decode()
+        b64 = _b64.b64encode(_gzip.compress(pickle.dumps(model))).decode()
         ts = datetime.now(_TW_TZ).strftime("%Y-%m-%d %H:%M")
         new_row = [market, b64, ts, n_samples, round(accuracy, 4)]
         rows = ws.get_all_values()
@@ -1309,7 +1309,8 @@ def _load_xgb_model(market: str) -> Optional[Any]:
         if not ws: return None
         for row in ws.get_all_values()[1:]:
             if len(row) >= 2 and row[0] == market:
-                model = pickle.loads(_b64.b64decode(row[1]))
+                raw = _b64.b64decode(row[1])
+                model = pickle.loads(_gzip.decompress(raw) if raw[:2] == b'\x1f\x8b' else raw)
                 _XGB_MODEL_CACHE[market] = model
                 return model
     except Exception as e:

@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Any
 
+import gzip
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -70,9 +71,8 @@ def _get_gc():
     if not GOOGLE_CREDS:
         sys.exit("ERROR: GOOGLE_CREDENTIALS_JSON not set.\n"
                  "Create a .env file with GOOGLE_CREDENTIALS_JSON='...' or export it in your shell.")
-    return gspread.authorize(
-        Credentials.from_service_account_info(json.loads(GOOGLE_CREDS), scopes=_SHEETS_SCOPES)
-    )
+    creds_dict = json.loads(GOOGLE_CREDS)
+    return gspread.service_account_from_dict(creds_dict)
 
 def _get_or_create_tab(tab_name: str, headers: list):
     gc = _get_gc()
@@ -121,7 +121,7 @@ def _save_live_params(market: str, params: dict, win_rate: float, sharpe: float)
 
 def _save_xgb_model(market: str, model: Any, n_samples: int, accuracy: float):
     ws = _get_or_create_tab(_MODEL_STORE_TAB, _MODEL_STORE_HDR)
-    b64 = _b64.b64encode(pickle.dumps(model)).decode()
+    b64 = _b64.b64encode(gzip.compress(pickle.dumps(model))).decode()
     ts  = datetime.now().strftime("%Y-%m-%d %H:%M")
     new_row = [market, b64, ts, n_samples, round(accuracy, 4)]
     rows = ws.get_all_values()
@@ -457,7 +457,7 @@ def main():
             Xn = np.array(X)
             yn = np.array(y)
             model = XGBClassifier(
-                n_estimators=200, max_depth=5, learning_rate=0.05,
+                n_estimators=100, max_depth=4, learning_rate=0.1,
                 subsample=0.8, colsample_bytree=0.8,
                 eval_metric="logloss", random_state=42, verbosity=0,
             )
