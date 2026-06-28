@@ -323,6 +323,7 @@
     .cl-entry { display: flex; gap: 12px; align-items: flex-start; }
     .cl-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 5px; background: rgba(255,255,255,0.06); color: var(--text-muted); white-space: nowrap; margin-top: 2px; flex-shrink: 0; }
     .cl-badge.current { background: rgba(129,140,248,0.15); color: var(--accent); border: 1px solid rgba(129,140,248,0.2); }
+    .cl-badge.roadmap { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
     .cl-date  { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
     .cl-items { font-size: 13px; color: var(--text-secondary); }
     .cl-items li { margin-top: 2px; list-style: disc; margin-left: 16px; line-height: 1.6; }
@@ -1985,8 +1986,10 @@
                   </div>
                   <div className="feature-grid">
                   {[
-                    {icon:'🤖',title:'v10.0 XGBoost ML',    desc:'每次掃描自動記錄買進訊號，10天後追蹤實際漲跌結果，用機器學習預測每支股票的勝率（🤖XX%顯示在掃描表格）。', new:true},
-                    {icon:'🔄',title:'v10.0 Walk-Forward',  desc:'每週日自動重跑6個月Grid Search，更新最佳RSI/ADX/Bias參數。市場環境變了，參數自動跟著變，永遠不過期。', new:true},
+                    {icon:'💼',title:'v11.0 模擬交易 🔜',   desc:'買進訊號自動記錄虛擬買入，達出場條件自動虛擬賣出。追蹤每日損益、累計報酬、最大回撤，1-2個月壓力測試後進入真實下單。', roadmap:true},
+                    {icon:'🤖',title:'v10.0 XGBoost ML',    desc:'每次掃描自動記錄買進訊號，10天後追蹤實際漲跌結果，用機器學習預測每支股票的勝率（🤖XX%顯示在掃描表格）。'},
+                    {icon:'💻',title:'v10.0 本機優化引擎',  desc:'simulate.py 在本機跑2年歷史Grid Search，台股最佳參數RSI 50-60/ADX 22-28，勝率從54%提升至78.6%，推送雲端即時生效。'},
+                    {icon:'🔄',title:'v10.0 Walk-Forward',  desc:'每週日自動重跑6個月Grid Search，更新最佳RSI/ADX/Bias參數。市場環境變了，參數自動跟著變，永遠不過期。'},
                     {icon:'🎯',title:'v9.0 動態出場',       desc:'回測不再固定持10天 — RSI>70超買/跌破MA10/MACD死叉/ATR停損任一觸發即出場（最少持3天），自動找最佳出場點。'},
                     {icon:'📉',title:'v9.0 VIX 市場環境',  desc:'美股顯示 VIX 恐慌指數。VIX>30極度恐慌(-20分)、>25恐慌(-10分)、<15樂觀(+5分)，自動調整綜合評分。', new:true},
                     {icon:'⚡',title:'v9.0 量能爆發加分',   desc:'成交量>2×VMA20額外+10分，>3×VMA20額外+15分（原本只有>1.2×才過門檻，現在爆量有額外加分）。', new:true},
@@ -2008,7 +2011,7 @@
                     {icon:'🏦',title:'外資/投信',             desc:'外資買超>1000張=+15分。投信買超=+8分。法人動向是台股最強領先指標。'},
                     {icon:'🛑',title:'停損 / 目標',           desc:'Hover 個股的「綜合評論」欄自動顯示：停損=MA20×0.97，目標=現價×1.15，風險報酬比。'},
                   ].map(f => (
-                    <div key={f.title} className="feature-tile" style={f.new?{borderColor:'rgba(129,140,248,0.25)',background:'rgba(129,140,248,0.05)'}:{}}>
+                    <div key={f.title} className="feature-tile" style={f.roadmap?{borderColor:'rgba(251,191,36,0.3)',background:'rgba(251,191,36,0.05)'}:f.new?{borderColor:'rgba(129,140,248,0.25)',background:'rgba(129,140,248,0.05)'}:{}}>
                       <div className="feature-icon">{f.icon}</div>
                       <div>
                         <div className="feature-title">{f.title}{f.new && <span style={{marginLeft:6,fontSize:9,fontWeight:800,padding:'1px 5px',borderRadius:3,background:'rgba(129,140,248,0.2)',color:'var(--accent)',verticalAlign:'middle'}}>NEW</span>}</div>
@@ -2720,11 +2723,19 @@
               {showChangelog && (
                 <div className="changelog-list">
                   {[
+                    { v:'v11.0', date:'🔜 Coming', roadmap:true, items:[
+                      '💼 虛擬持倉自動執行 — 買進訊號觸發→自動記錄「虛擬買入」，達出場條件→自動「虛擬賣出」，完全模擬真實交易流程',
+                      '📈 虛擬帳戶損益追蹤 — 每日計算持倉市值、已實現/未實現損益、最大回撤(Drawdown)',
+                      '📲 Telegram 每日報告 — 推送今日持倉狀態、當日損益、累計報酬率，讓你對比真實操作',
+                      '🧪 1-2個月壓力測試 — 用虛擬資金驗證策略穩定性，確認勝率和回撤符合預期後再進入真實交易',
+                      '🎯 目標：確認系統月勝率 ≥65%、最大連續虧損 ≤3筆，才進入 v12.0 真實下單',
+                    ]},
                     { v:'v10.0', date:'2026-06-28', current:true, items:[
                       '🤖 XGBoost ML 勝率預測 — 每次掃描記錄買進訊號，10天後追蹤實際結果，訓練後在掃描表格顯示 🤖AI% 勝率徽章',
                       '🔄 Walk-Forward 自動調參 — 每週日重跑6個月Grid Search，最佳RSI/ADX/Bias自動更新到GSheets，掃描直接使用',
                       '📊 真實勝率追蹤 — Model tab 顯示從真實訊號結果計算的勝率（非回測），平均10日報酬',
-                      '⚡ 種子訓練 — 新機器無需等待，可用歷史掃描記錄立即啟動XGBoost模型',
+                      '💻 本機模擬引擎 simulate.py — 2年歷史資料Grid Search + XGBoost訓練，推送最佳參數到雲端即時生效',
+                      '🔑 台股優化結果：RSI 50-60 / ADX 22-28 / Bias 4-8%，勝率從54.3%提升至78.6%（Sharpe 3.49）',
                       '📅 自動排程7項 — GitHub Actions每日更新結果、每週優化參數、每次Walk-Forward後自動重訓',
                     ]},
                     { v:'v9.0', date:'2026-06-27', items:[
@@ -2823,7 +2834,7 @@
                     { v:'v1.0-1.2', date:'2026-06-16', items:['Initial launch, MA20+Volume scanner, TW/US market split, LINE Notify'] },
                   ].map(cl => (
                     <div key={cl.v} className="cl-entry">
-                      <div className={`cl-badge ${cl.current?'current':''}`}>{cl.v}</div>
+                      <div className={`cl-badge ${cl.current?'current':cl.roadmap?'roadmap':''}`}>{cl.v}</div>
                       <div>
                         <div className="cl-date">{cl.date}</div>
                         <ul className="cl-items">{cl.items.map((it,i)=><li key={i}>{it}</li>)}</ul>
