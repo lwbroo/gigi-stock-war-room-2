@@ -1438,6 +1438,16 @@ async def model_stats(market: str = "tw"):
         out: Dict[str, Any] = {}
         live = _get_live_params(market)
         out["live_params"] = live or "defaults"
+        # also pull win_rate / sharpe / updated stored alongside params
+        try:
+            ws0 = _get_or_create_tab(_MODEL_PARAMS_TAB, _MODEL_PARAMS_HDR)
+            for r0 in (ws0.get_all_values()[1:] if ws0 else []):
+                if r0 and r0[0] == market:
+                    out["opt_win_rate"]   = float(r0[8])  if len(r0) > 8  and r0[8]  else None
+                    out["opt_sharpe"]     = float(r0[9])  if len(r0) > 9  and r0[9]  else None
+                    out["params_updated"] = r0[10]        if len(r0) > 10 else None
+                    break
+        except Exception: pass
         ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
         rows = [r for r in (ws.get_all_values()[1:] if ws else [])
                 if len(r) >= 15 and r[2] == market and r[14]]
