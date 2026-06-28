@@ -958,6 +958,7 @@
       const [regCoeffs,   setRegCoeffs]   = useState(null);
       const [regStatus,   setRegStatus]   = useState('');
       const [regLoading,  setRegLoading]  = useState(false);
+      const [paperRpt,    setPaperRpt]    = useState(null);
 
       // v7.0 sentiment state
       const [sentiment,      setSentiment]      = useState(null);
@@ -1077,6 +1078,11 @@
           } catch {}
         })();
       }, [market]);
+
+      // ── load paper report when model tab opens or market changes ─────────────
+      useEffect(() => {
+        if (activeTab === 'model') fetchPaperRpt(market);
+      }, [activeTab, market]);
 
       // ── midnight auto-scan ─────────────────────────────────────────────────────
       const performAutoScan = async () => {
@@ -1210,6 +1216,15 @@
           const data = await r.json();
           if (data.status === 'ok') setRegCoeffs(data);
         } catch(e) { /* model not trained yet, silent */ }
+      };
+
+      const fetchPaperRpt = async (mkt) => {
+        try {
+          const r = await fetch(`${API_BASE}/api/paper-report?market=${mkt||market}`);
+          const data = await r.json();
+          if (data.status === 'ok') setPaperRpt(data);
+          else setPaperRpt(null);
+        } catch(e) { /* no data yet */ }
       };
 
       const trainModel = async () => {
@@ -2596,6 +2611,102 @@
           {/* ═══════════════ MODEL TAB ═══════════════ */}
           {activeTab === 'model' && (
             <div>
+              {/* ── 本機回測報告 (paper_results from simulate.py) ── */}
+              {(() => {
+                const p = paperRpt;
+                if (!p) return (
+                  <div className="card" style={{marginBottom:20,padding:20,textAlign:'center',color:'var(--text-muted)'}}>
+                    <div style={{fontSize:28,marginBottom:6}}>🖥️</div>
+                    <div style={{fontWeight:600,fontSize:14,marginBottom:4}}>尚無本機回測報告</div>
+                    <div style={{fontSize:12}}>在本機執行 <code style={{background:'var(--bg-2)',padding:'1px 6px',borderRadius:4}}>python3 simulate.py --mode paper</code> 後，報告將自動顯示在此。</div>
+                  </div>
+                );
+                const wr    = p.win_rate != null   ? (p.win_rate * 100).toFixed(1)  : '—';
+                const ann   = p.annual_return_pct  != null ? p.annual_return_pct.toFixed(1) : '—';
+                const cum   = p.cumulative_return_pct != null ? p.cumulative_return_pct.toFixed(1) : '—';
+                const sh    = p.sharpe != null      ? p.sharpe.toFixed(2)            : '—';
+                const mc    = p.max_consec_loss;
+                const pr    = p.params || {};
+                const wrOk  = p.win_rate >= 0.65;
+                const mcOk  = mc != null && mc <= 3;
+                const pass  = p.passed;
+
+                // ── Dynamic suggestions ──────────────────────────────────────
+                const suggestions = [];
+                if (!wrOk) suggestions.push({ icon:'📉', title:'提升勝率', body:`目前 ${wr}% < 65%。建議收窄 RSI 範圍（試 ${(pr.rsi_lo||50)+2}-${(pr.rsi_hi||60)-2}），或提高 ADX 下限至 ${(pr.adx_lo||22)+3} 以過濾弱趨勢。` });
+                if (!mcOk) suggestions.push({ icon:'🛡️', title:'降低連續虧損', body:`最大連虧 ${mc} 筆 > 3 筆。建議加嚴 ATR 停損倍數（1.2x），或加入「量縮確認」條件。` });
+                if (p.avg_held_days && p.avg_held_days < 5) suggestions.push({ icon:'⏳', title:'延長持倉天數', body:`平均持倉僅 ${p.avg_held_days}天，出場太快。考慮將最短持倉天數從3天提高到5天。` });
+                if (p.total_trades && p.total_trades < 30) suggestions.push({ icon:'📋', title:'增加 Watchlist 股數', body:`僅 ${p.total_trades} 筆交易，樣本不足。建議台股增加到 50 支、美股增加到 30 支。` });
+                if (pass && p.annual_return_pct > 30) suggestions.push({ icon:'🚀', title:'策略驗證通過，下一步', body:'可進入 v11.0 Paper Trading：開啟每日真實訊號追蹤，連跑1個月，確認勝率後啟動 v12.0 真實下單。' });
+                if (suggestions.length === 0) suggestions.push({ icon:'✅', title:'策略表現良好', body:'各項指標均達標，建議維持現有參數並持續累積數據。' });
+
+                return (
+                  <div className="card" style={{marginBottom:20}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+                      <span style={{fontSize:18}}>🖥️</span>
+                      <span style={{fontWeight:700,fontSize:15}}>本機 2 年回測報告</span>
+                      <span style={{fontSize:11,color:'var(--text-muted)',marginLeft:'auto'}}>{p.start_date} → {p.end_date} · 更新 {p.run_at}</span>
+                      <span style={{fontSize:11,padding:'2px 8px',borderRadius:12,
+                        background: pass ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)',
+                        color: pass ? 'var(--green)' : 'var(--red)',
+                        border: `1px solid ${pass ? 'var(--green)' : 'var(--red)'}`,
+                        fontWeight:700}}>
+                        {pass ? '✅ 達標' : '⚠️ 未達標'}
+                      </span>
+                    </div>
+
+                    {/* KPI row */}
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(120px,1fr))',gap:10,marginBottom:16}}>
+                      {[
+                        { label:'平均勝率',     val: wr + '%',     ok: wrOk,  icon:'🎯' },
+                        { label:'年化報酬',     val: '+' + ann + '%', ok: p.annual_return_pct > 20, icon:'📈' },
+                        { label:'累積報酬(等權)', val: '+' + cum + '%', ok: p.cumulative_return_pct > 0, icon:'💰' },
+                        { label:'Sharpe',       val: sh,           ok: p.sharpe > 1,  icon:'📐' },
+                        { label:'最大連虧',     val: mc + ' 筆',   ok: mcOk,  icon:'🛡️' },
+                        { label:'平均持倉',     val: (p.avg_held_days||'—') + ' 天', ok: true, icon:'⏱️' },
+                        { label:'總交易數',     val: p.total_trades + ' 筆', ok: p.total_trades > 20, icon:'📊' },
+                      ].map(({label,val,ok,icon}) => (
+                        <div key={label} style={{background:'var(--bg-2)',border:`1px solid ${ok?'rgba(63,185,80,0.3)':'var(--border)'}`,borderRadius:8,padding:'10px 12px',textAlign:'center'}}>
+                          <div style={{fontSize:16,marginBottom:4}}>{icon}</div>
+                          <div style={{fontSize:16,fontWeight:800,color: ok ? 'var(--green)' : 'var(--text-primary)'}}>{val}</div>
+                          <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>{label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Params */}
+                    <div style={{background:'var(--bg-2)',borderRadius:8,padding:'10px 14px',marginBottom:16,fontSize:12}}>
+                      <span style={{color:'var(--text-muted)',marginRight:8}}>最佳參數：</span>
+                      {[
+                        ['RSI', `${pr.rsi_lo||'—'} – ${pr.rsi_hi||'—'}`],
+                        ['ADX', `${pr.adx_lo||'—'} – ${pr.adx_hi||'—'}`],
+                        ['Bias', `${pr.bias_lo||'—'} – ${pr.bias_hi||'—'}%`],
+                        ['MACD_H', `≥${pr.macd_h_pct_min||'—'}%tile`],
+                      ].map(([k,v]) => (
+                        <span key={k} style={{marginRight:14}}>
+                          <span style={{color:'var(--text-muted)'}}>{k} </span>
+                          <span style={{fontWeight:700,color:'var(--text-primary)'}}>{v}</span>
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Suggestions */}
+                    <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>💡 建議修改方向</div>
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+                      {suggestions.map(({icon,title,body}) => (
+                        <div key={title} style={{background:'var(--bg-2)',border:'1px solid var(--border)',borderRadius:8,padding:'10px 12px',display:'flex',gap:8}}>
+                          <div style={{fontSize:18,flexShrink:0}}>{icon}</div>
+                          <div>
+                            <div style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{title}</div>
+                            <div style={{fontSize:12,color:'var(--text-muted)',marginTop:3,lineHeight:1.5}}>{body}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── v10.0 Auto-Optimize Stats ── */}
               <AutoLearnPanel market={market} apiBase={API_BASE} />
 

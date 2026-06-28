@@ -1146,8 +1146,13 @@ _OUTCOME_HDR      = ["signal_date","ticker","market","close_signal",
 _MODEL_PARAMS_TAB = "model_params"
 _MODEL_PARAMS_HDR = ["market","rsi_lo","rsi_hi","adx_lo","adx_hi",
                      "bias_lo","bias_hi","macd_h_pct_min","win_rate","sharpe","updated"]
-_MODEL_STORE_TAB  = "model_store"
-_MODEL_STORE_HDR  = ["market","model_b64","trained_at","n_samples","accuracy"]
+_MODEL_STORE_TAB   = "model_store"
+_MODEL_STORE_HDR   = ["market","model_b64","trained_at","n_samples","accuracy"]
+_PAPER_RESULTS_TAB = "paper_results"
+_PAPER_RESULTS_HDR = ["run_at","market","start_date","end_date","n_tickers","total_trades",
+                      "win_rate","avg_return_pct","annual_return_pct","cumulative_return_pct",
+                      "max_consec_loss","sharpe","avg_held_days","passed",
+                      "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min"]
 
 _LIVE_PARAMS_CACHE: Dict[str, dict] = {}
 _LIVE_PARAMS_TS:    Dict[str, float] = {}
@@ -1463,6 +1468,52 @@ async def model_reload(market: str = "tw"):
     _LIVE_PARAMS_TS.pop(market, None)
     _XGB_MODEL_CACHE.pop(market, None)
     return {"status": "ok", "market": market, "message": "Cache cleared — next scan uses latest GSheets params/model"}
+
+
+@app.get("/api/paper-report")
+async def paper_report(market: str = "tw"):
+    """Return latest paper trading backtest result from GSheets paper_results tab."""
+    try:
+        ws = _get_or_create_tab(_PAPER_RESULTS_TAB, _PAPER_RESULTS_HDR)
+        all_rows = ws.get_all_values() if ws else []
+        hdr = _PAPER_RESULTS_HDR
+        target = None
+        for r in all_rows[1:]:
+            if len(r) >= 2 and r[1] == market:
+                target = r
+        if not target:
+            return {"status": "no_data", "market": market}
+        def _f(val):
+            try: return float(val)
+            except: return None
+        return {
+            "status":               "ok",
+            "market":               market,
+            "run_at":               target[0]  if len(target) > 0  else None,
+            "start_date":           target[2]  if len(target) > 2  else None,
+            "end_date":             target[3]  if len(target) > 3  else None,
+            "n_tickers":            target[4]  if len(target) > 4  else None,
+            "total_trades":         _f(target[5])  if len(target) > 5  else None,
+            "win_rate":             _f(target[6])  if len(target) > 6  else None,
+            "avg_return_pct":       _f(target[7])  if len(target) > 7  else None,
+            "annual_return_pct":    _f(target[8])  if len(target) > 8  else None,
+            "cumulative_return_pct":_f(target[9])  if len(target) > 9  else None,
+            "max_consec_loss":      _f(target[10]) if len(target) > 10 else None,
+            "sharpe":               _f(target[11]) if len(target) > 11 else None,
+            "avg_held_days":        _f(target[12]) if len(target) > 12 else None,
+            "passed":               (target[13] == "YES") if len(target) > 13 else False,
+            "params": {
+                "rsi_lo":        _f(target[14]) if len(target) > 14 else None,
+                "rsi_hi":        _f(target[15]) if len(target) > 15 else None,
+                "adx_lo":        _f(target[16]) if len(target) > 16 else None,
+                "adx_hi":        _f(target[17]) if len(target) > 17 else None,
+                "bias_lo":       _f(target[18]) if len(target) > 18 else None,
+                "bias_hi":       _f(target[19]) if len(target) > 19 else None,
+                "macd_h_pct_min":_f(target[20]) if len(target) > 20 else None,
+            },
+        }
+    except Exception as e:
+        return {"status": "error", "reason": str(e)}
 
 
 # ── Backtest ───────────────────────────────────────────────────────────────────
