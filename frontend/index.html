@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0d1117" />
   <link rel="manifest" href="/manifest.json" />
-  <title>Gigi Stock War Room v9.0</title>
+  <title>Gigi Stock War Room v10.0</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -1469,7 +1469,7 @@
               <div className="logo">📈</div>
               <div>
                 <div className="header-title">Gigi Stock War Room</div>
-                <div className="header-sub">AI-Powered Stock Scanner · v9.0</div>
+                <div className="header-sub">AI-Powered Stock Scanner · v10.0</div>
               </div>
             </div>
             <div className="header-right">
@@ -1966,7 +1966,7 @@
             <div className="card" style={{marginTop:4}}>
               <div className="collapse-header" onClick={() => setShowGuide(v=>!v)}>
                 <span style={{fontSize:13,fontWeight:600,color:'var(--text-secondary)'}}>ℹ️ App Guide</span>
-                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v9.0</span>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v10.0</span>
                 <span style={{fontSize:11,color:'var(--text-muted)'}}>功能總覽</span>
                 <span className={`collapse-chevron ${showGuide?'open':''}`}>▶</span>
               </div>
@@ -1985,7 +1985,9 @@
                   </div>
                   <div className="feature-grid">
                   {[
-                    {icon:'🎯',title:'v9.0 動態出場',       desc:'回測不再固定持10天 — RSI>70超買/跌破MA10/MACD死叉/ATR停損任一觸發即出場（最少持3天），自動找最佳出場點。', new:true},
+                    {icon:'🤖',title:'v10.0 XGBoost ML',    desc:'每次掃描自動記錄買進訊號，10天後追蹤實際漲跌結果，用機器學習預測每支股票的勝率（🤖XX%顯示在掃描表格）。', new:true},
+                    {icon:'🔄',title:'v10.0 Walk-Forward',  desc:'每週日自動重跑6個月Grid Search，更新最佳RSI/ADX/Bias參數。市場環境變了，參數自動跟著變，永遠不過期。', new:true},
+                    {icon:'🎯',title:'v9.0 動態出場',       desc:'回測不再固定持10天 — RSI>70超買/跌破MA10/MACD死叉/ATR停損任一觸發即出場（最少持3天），自動找最佳出場點。'},
                     {icon:'📉',title:'v9.0 VIX 市場環境',  desc:'美股顯示 VIX 恐慌指數。VIX>30極度恐慌(-20分)、>25恐慌(-10分)、<15樂觀(+5分)，自動調整綜合評分。', new:true},
                     {icon:'⚡',title:'v9.0 量能爆發加分',   desc:'成交量>2×VMA20額外+10分，>3×VMA20額外+15分（原本只有>1.2×才過門檻，現在爆量有額外加分）。', new:true},
                     {icon:'🔥',title:'v9.0 族群熱度過濾',   desc:'點「族群過濾」按鈕，Scanner 只顯示熱度>50%強勢族群中的股票，快速聚焦最強板塊。', new:true},
@@ -2712,13 +2714,20 @@
             <div className="card" style={{marginTop:8}}>
               <div className="collapse-header" onClick={() => setShowChangelog(v=>!v)}>
                 <span style={{fontSize:13,fontWeight:600,color:'var(--text-secondary)'}}>📋 Changelog</span>
-                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v9.0</span>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v10.0</span>
                 <span className={`collapse-chevron ${showChangelog?'open':''}`}>▶</span>
               </div>
               {showChangelog && (
                 <div className="changelog-list">
                   {[
-                    { v:'v9.0', date:'2026-06-27', current:true, items:[
+                    { v:'v10.0', date:'2026-06-28', current:true, items:[
+                      '🤖 XGBoost ML 勝率預測 — 每次掃描記錄買進訊號，10天後追蹤實際結果，訓練後在掃描表格顯示 🤖AI% 勝率徽章',
+                      '🔄 Walk-Forward 自動調參 — 每週日重跑6個月Grid Search，最佳RSI/ADX/Bias自動更新到GSheets，掃描直接使用',
+                      '📊 真實勝率追蹤 — Model tab 顯示從真實訊號結果計算的勝率（非回測），平均10日報酬',
+                      '⚡ 種子訓練 — 新機器無需等待，可用歷史掃描記錄立即啟動XGBoost模型',
+                      '📅 自動排程7項 — GitHub Actions每日更新結果、每週優化參數、每次Walk-Forward後自動重訓',
+                    ]},
+                    { v:'v9.0', date:'2026-06-27', items:[
                       '🎯 動態出場訊號 — 回測不再固定持10天，RSI>70/跌破MA10/MACD死叉/ATR停損任一觸發即出場，最少持3天',
                       '📉 VIX 市場環境 — 美股即時顯示恐慌指數，VIX>30: -20分 / >25: -10分 / <15: +5分，自動調整評分',
                       '⚡ 量能爆發加分 — 成交量>2×VMA20: +10分 / >3×VMA20: +15分，爆量突破額外獎勵',
