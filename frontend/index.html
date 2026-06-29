@@ -920,9 +920,6 @@
       const [showGuide,      setShowGuide]      = useState(false);
       const [showNotes,      setShowNotes]      = useState(false);
       const [showChangelog,  setShowChangelog]  = useState(false);
-      const [showWhatsNew,   setShowWhatsNew]   = useState(() => {
-        try { return localStorage.getItem('gigiWhatsNewDismissed') !== 'v6.0'; } catch { return true; }
-      });
       const [activeConds,    setActiveConds]    = useState(Object.fromEntries(COND_KEYS.map(k=>[k,true])));
       const [importText,     setImportText]     = useState('');
       const [importFeedback, setImportFeedback] = useState('');
@@ -1598,44 +1595,6 @@
           {/* ═══════════════ SCANNER TAB ═══════════════ */}
           {activeTab === 'scanner' && (<>
 
-            {/* v6.0 What's New banner */}
-            {showWhatsNew && (
-              <div style={{
-                background:'linear-gradient(135deg,rgba(88,166,255,0.12),rgba(63,185,80,0.10))',
-                border:'1px solid rgba(88,166,255,0.3)', borderRadius:10,
-                padding:'14px 16px', marginBottom:16,
-                display:'flex', gap:14, alignItems:'flex-start',
-              }}>
-                <div style={{fontSize:24,flexShrink:0}}>🎉</div>
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:700,fontSize:14,color:'var(--accent)',marginBottom:6}}>
-                    v6.0 已更新 — 更精準的買進訊號
-                  </div>
-                  <div style={{display:'flex',flexWrap:'wrap',gap:'6px 16px',fontSize:12,color:'var(--text-secondary)'}}>
-                    {[
-                      ['✅','連續2天確認','避免單日假訊號'],
-                      ['⚠️','5日延伸過濾','不追已漲5%+的股票'],
-                      ['📅','財報風險提示','7天內財報自動警示'],
-                      ['📊','EPS/營收成長','加入基本面評分'],
-                      ['🧠','自適應模型','每天學習越來越準'],
-                    ].map(([icon,title,desc])=>(
-                      <span key={title} style={{display:'flex',alignItems:'center',gap:4}}>
-                        <span>{icon}</span>
-                        <span style={{fontWeight:600,color:'var(--text-primary)'}}>{title}</span>
-                        <span style={{color:'var(--text-muted)'}}>— {desc}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <button onClick={()=>{
-                  setShowWhatsNew(false);
-                  try { localStorage.setItem('gigiWhatsNewDismissed','v6.0'); } catch{}
-                }} style={{
-                  background:'none',border:'none',color:'var(--text-muted)',
-                  cursor:'pointer',fontSize:18,padding:'0 4px',flexShrink:0,lineHeight:1,
-                }} title="Dismiss">×</button>
-              </div>
-            )}
 
             {/* Dashboard stats */}
             {lastData.length > 0 && (
@@ -1966,13 +1925,36 @@
               {showGuide && (
                 <div style={{marginTop:16}}>
                   {/* v7.0 highlight */}
-                  <div style={{background:'linear-gradient(135deg,rgba(99,102,241,0.1),rgba(129,140,248,0.06))',border:'1px solid rgba(129,140,248,0.2)',borderRadius:12,padding:'12px 16px',marginBottom:14,display:'flex',gap:12,alignItems:'flex-start'}}>
+                  <div style={{background:'linear-gradient(135deg,rgba(99,102,241,0.1),rgba(129,140,248,0.06))',border:'1px solid rgba(129,140,248,0.2)',borderRadius:12,padding:'12px 16px',marginBottom:10,display:'flex',gap:12,alignItems:'flex-start'}}>
                     <span style={{fontSize:22,flexShrink:0}}>✨</span>
                     <div>
                       <div style={{fontWeight:700,fontSize:13,color:'var(--accent)',marginBottom:4}}>v7.0 新功能 — Grok AI 市場情緒 + Premium UI</div>
                       <div style={{fontSize:12,color:'var(--text-secondary)',lineHeight:1.7}}>
                         每日自動分析市場新聞，由 Grok AI 輸出情緒分數（-1.0 極悲觀 ↔ +1.0 極樂觀），自動融入個股綜合評分。
                         同步完成 Premium Dark Glass UI 全面升級 — 玻璃擬態卡片、漸層邊框、Inter 字體。
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* v6.0 highlight */}
+                  <div style={{background:'linear-gradient(135deg,rgba(88,166,255,0.08),rgba(63,185,80,0.06))',border:'1px solid rgba(88,166,255,0.2)',borderRadius:12,padding:'12px 16px',marginBottom:14,display:'flex',gap:12,alignItems:'flex-start'}}>
+                    <span style={{fontSize:22,flexShrink:0}}>🎉</span>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:13,color:'var(--accent)',marginBottom:6}}>v6.0 已更新 — 更精準的買進訊號</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:'5px 20px',fontSize:12,color:'var(--text-secondary)'}}>
+                        {[
+                          ['✅','連續2天確認','避免單日假訊號'],
+                          ['⚠️','5日延伸過濾','不追已漲5%+的股票'],
+                          ['📅','財報風險提示','7天內財報自動警示'],
+                          ['📊','EPS/營收成長','加入基本面評分'],
+                          ['🧠','自適應模型','每天學習越來越準'],
+                        ].map(([icon,title,desc])=>(
+                          <span key={title} style={{display:'flex',alignItems:'center',gap:4}}>
+                            <span>{icon}</span>
+                            <span style={{fontWeight:600,color:'var(--text-primary)'}}>{title}</span>
+                            <span style={{color:'var(--text-muted)'}}>— {desc}</span>
+                          </span>
+                        ))}
                       </div>
                     </div>
                   </div>
