@@ -1152,7 +1152,9 @@ _PAPER_RESULTS_TAB = "paper_results"
 _PAPER_RESULTS_HDR = ["run_at","market","start_date","end_date","n_tickers","total_trades",
                       "win_rate","avg_return_pct","annual_return_pct","cumulative_return_pct",
                       "max_consec_loss","sharpe","avg_held_days","passed",
-                      "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min"]
+                      "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min",
+                      "avg_win_pct","avg_loss_pct","max_win_pct","max_loss_pct",
+                      "monthly_wr","exit_reasons"]
 
 _LIVE_PARAMS_CACHE: Dict[str, dict] = {}
 _LIVE_PARAMS_TS:    Dict[str, float] = {}
@@ -1496,6 +1498,10 @@ async def paper_report(market: str = "tw"):
         def _f(val):
             try: return float(val)
             except: return None
+        import json as _json
+        def _j(val):
+            try: return _json.loads(val)
+            except: return {}
         return {
             "status":               "ok",
             "market":               market,
@@ -1521,6 +1527,12 @@ async def paper_report(market: str = "tw"):
                 "bias_hi":       _f(target[19]) if len(target) > 19 else None,
                 "macd_h_pct_min":_f(target[20]) if len(target) > 20 else None,
             },
+            "avg_win_pct":          _f(target[21]) if len(target) > 21 else None,
+            "avg_loss_pct":         _f(target[22]) if len(target) > 22 else None,
+            "max_win_pct":          _f(target[23]) if len(target) > 23 else None,
+            "max_loss_pct":         _f(target[24]) if len(target) > 24 else None,
+            "monthly_wr":           _j(target[25]) if len(target) > 25 else {},
+            "exit_reasons":         _j(target[26]) if len(target) > 26 else {},
         }
     except Exception as e:
         return {"status": "error", "reason": str(e)}

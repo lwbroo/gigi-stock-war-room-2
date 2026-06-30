@@ -69,7 +69,9 @@ _PAPER_RESULTS_TAB = "paper_results"
 _PAPER_RESULTS_HDR = ["run_at","market","start_date","end_date","n_tickers","total_trades",
                       "win_rate","avg_return_pct","annual_return_pct","cumulative_return_pct",
                       "max_consec_loss","sharpe","avg_held_days","passed",
-                      "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min"]
+                      "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min",
+                      "avg_win_pct","avg_loss_pct","max_win_pct","max_loss_pct",
+                      "monthly_wr","exit_reasons"]
 
 TW_BEST_PARAMS   = {"rsi_lo":52,"rsi_hi":60,"bias_lo":4,"bias_hi":8,"adx_lo":18,"adx_hi":35,"macd_h_pct_min":60}
 US_DEFAULT_PARAMS = {"rsi_lo":60,"rsi_hi":65,"bias_lo":4,"bias_hi":8,"adx_lo":18,"adx_hi":30,"macd_h_pct_min":60}
@@ -234,12 +236,38 @@ def _save_paper_result(market: str, trades: list, params: dict,
                        annual_ret: float, cum_ret: float, sharpe: Optional[float],
                        max_consec: int):
     """Upsert latest paper trading result into paper_results tab (one row per market)."""
+    import json as _json
     try:
         ws = _get_or_create_tab(_PAPER_RESULTS_TAB, _PAPER_RESULTS_HDR)
-        rets = [t["return_pct"] for t in trades]
+        rets   = [t["return_pct"] for t in trades]
+        wins_r = [t["return_pct"] for t in trades if t["won"]]
+        loss_r = [t["return_pct"] for t in trades if not t["won"]]
         avg_r  = round(float(np.mean(rets)), 3) if rets else 0
         wr     = round(sum(1 for t in trades if t["won"]) / len(trades), 4) if trades else 0
         avg_hd = round(float(np.mean([t["held_days"] for t in trades])), 1) if trades else 0
+        avg_win  = round(float(np.mean(wins_r)), 3) if wins_r else 0
+        avg_loss = round(float(np.mean(loss_r)), 3) if loss_r else 0
+        max_win  = round(max(rets), 3) if rets else 0
+        max_loss = round(min(rets), 3) if rets else 0
+        # Monthly breakdown
+        monthly: dict = {}
+        for t in trades:
+            mo = t["entry_date"][:7]
+            if mo not in monthly:
+                monthly[mo] = {"w": 0, "n": 0, "rets": []}
+            monthly[mo]["n"] += 1
+            if t["won"]:
+                monthly[mo]["w"] += 1
+            monthly[mo]["rets"].append(t["return_pct"])
+        monthly_wr = {
+            mo: {"wr": round(d["w"]/d["n"], 3), "n": d["n"], "w": d["w"],
+                 "avg": round(float(np.mean(d["rets"])), 2)}
+            for mo, d in sorted(monthly.items())
+        }
+        # Exit reasons
+        reasons: dict = {}
+        for t in trades:
+            reasons[t["exit_reason"]] = reasons.get(t["exit_reason"], 0) + 1
         row = [
             datetime.now().strftime("%Y-%m-%d %H:%M"),
             market, start_date, end_date,
@@ -257,6 +285,9 @@ def _save_paper_result(market: str, trades: list, params: dict,
             params.get("adx_lo",""), params.get("adx_hi",""),
             params.get("bias_lo",""), params.get("bias_hi",""),
             params.get("macd_h_pct_min",""),
+            avg_win, avg_loss, max_win, max_loss,
+            _json.dumps(monthly_wr, ensure_ascii=False),
+            _json.dumps(reasons, ensure_ascii=False),
         ]
         all_rows = ws.get_all_values()
         for i, r in enumerate(all_rows[1:], start=2):
