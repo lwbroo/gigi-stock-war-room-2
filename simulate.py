@@ -54,6 +54,8 @@ FINMIND_TOKEN    = os.environ.get("FINMIND_TOKEN", "")
 FINMIND_BASE     = "https://api.finmindtrade.com/api/v4/data"
 GOOGLE_CREDS     = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
 
+_UNIVERSE_TAB     = "universe_tw"  # top-150 market cap universe (populated by update_universe.py)
+
 _MODEL_PARAMS_TAB = "model_params"
 _MODEL_PARAMS_HDR = ["market","rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi",
                      "macd_h_pct_min","win_rate","sharpe","updated"]
@@ -108,6 +110,56 @@ def _get_watchlist(market: str) -> List[str]:
         print(f"  Error reading watchlist: {e}")
         return []
 
+
+def _get_universe(market: str) -> List[str]:
+    """Read tickers from the top-N market-cap universe tab (TW only for now)."""
+    if market != "tw":
+        print(f"  --universe not yet supported for market='{market}', falling back to watchlist")
+        return _get_watchlist(market)
+    try:
+        gc = _get_gc()
+        sh = gc.open(_SHEET_NAME)
+        ws = sh.worksheet(_UNIVERSE_TAB)
+        rows = ws.get_all_values()
+        if not rows:
+            raise ValueError("universe_tw tab is empty — run update_universe.py first")
+        hdr = rows[0]
+        col = hdr.index("code") if "code" in hdr else 1
+        tickers = [r[col].strip() for r in rows[1:] if r and r[col].strip()]
+        print(f"  ✦ Universe mode: {len(tickers)} TW large-cap stocks (top-150 by market cap)")
+        return tickers
+    except gspread.exceptions.WorksheetNotFound:
+        print(f"  ERROR: '{_UNIVERSE_TAB}' tab not found — run:  python update_universe.py")
+        sys.exit(1)
+    except Exception as e:
+        print(f"  Error reading universe: {e}")
+        sys.exit(1)
+
+def _load_live_params(market: str) -> Optional[dict]:
+    """Read the latest optimized params for a market from GSheets model_params tab."""
+    try:
+        ws = _get_or_create_tab(_MODEL_PARAMS_TAB, _MODEL_PARAMS_HDR)
+        rows = ws.get_all_values()
+        hdr  = rows[0] if rows else _MODEL_PARAMS_HDR
+        for r in rows[1:]:
+            if r and r[0] == market:
+                def _f(col):
+                    idx = hdr.index(col) if col in hdr else None
+                    return float(r[idx]) if idx is not None and idx < len(r) and r[idx] else None
+                return {
+                    "rsi_lo":        _f("rsi_lo"),
+                    "rsi_hi":        _f("rsi_hi"),
+                    "adx_lo":        _f("adx_lo"),
+                    "adx_hi":        _f("adx_hi"),
+                    "bias_lo":       _f("bias_lo"),
+                    "bias_hi":       _f("bias_hi"),
+                    "macd_h_pct_min":_f("macd_h_pct_min"),
+                }
+    except Exception as e:
+        print(f"  ⚠️  Could not load params from GSheets: {e}")
+    return None
+
+
 def _save_live_params(market: str, params: dict, win_rate: float, sharpe: float):
     ws = _get_or_create_tab(_MODEL_PARAMS_TAB, _MODEL_PARAMS_HDR)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -130,17 +182,23 @@ def _save_live_params(market: str, params: dict, win_rate: float, sharpe: float)
 
 def _save_xgb_model(market: str, model: Any, n_samples: int, accuracy: float):
     ws = _get_or_create_tab(_MODEL_STORE_TAB, _MODEL_STORE_HDR)
-    b64 = _b64.b64encode(gzip.compress(pickle.dumps(model))).decode()
+    b64 = _b64.b64encode(gzip.compress(pickle.dumps(model), compresslevel=9)).decode()
+    if len(b64) > 45000:
+        # GSheets cell limit is 50k chars; skip storing model but record metadata
+        print(f"  ⚠️  model_store [{market}]: model too large for GSheets ({len(b64)} chars) — params saved, model skipped")
+        b64 = "[too_large]"
     ts  = datetime.now().strftime("%Y-%m-%d %H:%M")
     new_row = [market, b64, ts, n_samples, round(accuracy, 4)]
     rows = ws.get_all_values()
     for i, r in enumerate(rows[1:], 2):
         if r and r[0] == market:
             ws.update(f"A{i}", [new_row])
-            print(f"  ↑ Updated model_store [{market}] ({n_samples} samples, acc={accuracy:.3f})")
+            if b64 != "[too_large]":
+                print(f"  ↑ Updated model_store [{market}] ({n_samples} samples, acc={accuracy:.3f})")
             return
     ws.append_rows([new_row], value_input_option="RAW")
-    print(f"  + Inserted model_store [{market}] ({n_samples} samples, acc={accuracy:.3f})")
+    if b64 != "[too_large]":
+        print(f"  + Inserted model_store [{market}] ({n_samples} samples, acc={accuracy:.3f})")
 
 def _save_sim_result(market: str, years: int, n_tickers: int, all_signals: list,
                      best: Optional[dict], acc: float, notes: str = ""):
@@ -473,6 +531,35 @@ def run_grid_search(all_signals: List[dict], market: str, hold_days: int = 10) -
     return best
 
 
+# ── Broad market filter ────────────────────────────────────────────────────────
+
+_MARKET_INDEX = {"tw": "^TWII", "us": "^GSPC"}
+
+def _build_market_trend(market: str, start_date: str, end_date: str) -> Optional[pd.Series]:
+    """
+    Return a boolean Series indexed by date: True if broad market MA20 > MA60 on that day.
+    Used to skip entries during broad bear markets.
+    """
+    sym = _MARKET_INDEX.get(market)
+    if not sym:
+        return None
+    try:
+        fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=200)).strftime("%Y-%m-%d")
+        df = yf.download(sym, start=fetch_start, end=end_date, progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return None
+        df = df[["Close"]].copy()
+        df.columns = ["Close"]
+        df["MA20"] = df["Close"].rolling(20).mean()
+        df["MA60"] = df["Close"].rolling(60).mean()
+        df["bull"] = df["MA20"] > df["MA60"]
+        df.index   = pd.to_datetime(df.index).normalize()
+        return df["bull"]
+    except Exception as e:
+        print(f"  ⚠️  Market trend fetch failed ({sym}): {e}")
+        return None
+
+
 # ── Paper trading simulation ───────────────────────────────────────────────────
 
 def _bt_is_buy(row: pd.Series, params: dict) -> bool:
@@ -501,10 +588,12 @@ def _bt_is_buy(row: pd.Series, params: dict) -> bool:
 
 
 def _collect_paper_trades(code: str, start_date: str, end_date: str,
-                           params: dict, hold_days: int = 10, market: str = "tw") -> List[dict]:
+                           params: dict, hold_days: int = 10, market: str = "tw",
+                           market_trend: Optional[pd.Series] = None) -> List[dict]:
     """
     Run full backtest with DYNAMIC EXIT for one ticker using given params.
     Returns list of completed trades (same logic as cloud _backtest_ticker).
+    market_trend: boolean Series (date → bool) — if provided, skip entry on bear-market days.
     """
     fetch_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
     fetch_end   = (datetime.strptime(end_date,   "%Y-%m-%d") + timedelta(days=hold_days + 15)).strftime("%Y-%m-%d")
@@ -521,6 +610,12 @@ def _collect_paper_trades(code: str, start_date: str, end_date: str,
     for idx, row in in_range.iterrows():
         if not _bt_is_buy(row, params):
             continue
+        # Skip if broad market is in a bear phase (MA20 < MA60)
+        if market_trend is not None:
+            entry_date = pd.to_datetime(row["date"]).normalize()
+            is_bull = market_trend.get(entry_date, True)  # default True if date missing
+            if not bool(is_bull):
+                continue
         past_mh = df["MACD_H"].iloc[max(0, idx - 50):idx].dropna()
         mh_pct  = float((past_mh < float(row["MACD_H"])).mean() * 100) if len(past_mh) >= 5 else 50.0
         if mh_pct < params.get("macd_h_pct_min", 0):
@@ -689,6 +784,8 @@ def main():
     parser.add_argument("--hold",      default=10,    type=int, help="Hold days for backtest (default: 10)")
     parser.add_argument("--mode",      default="optimize", choices=["optimize","paper","both"],
                         help="optimize: grid search + XGBoost | paper: paper trading report | both: run optimize then paper")
+    parser.add_argument("--universe",  action="store_true",
+                        help="Use top-150 market cap universe (universe_tw tab) instead of curated watchlist")
     parser.add_argument("--no-push",   action="store_true", help="Dry run: don't write to GSheets")
     parser.add_argument("--no-reload", action="store_true", help="Don't notify cloud to reload cache")
     args = parser.parse_args()
@@ -700,14 +797,15 @@ def main():
 
     for market in markets:
         print(f"\n{'='*60}")
-        print(f"  {market.upper()} | {start_date} → {end_date} | mode={args.mode} | hold={args.hold}d")
+        src_label = "universe" if args.universe else "watchlist"
+        print(f"  {market.upper()} | {start_date} → {end_date} | mode={args.mode} | hold={args.hold}d | src={src_label}")
         print(f"{'='*60}")
 
-        # ── 1. Watchlist ──────────────────────────────────────────────────────
-        print("\n[1] Loading watchlist...")
-        tickers = _get_watchlist(market)
+        # ── 1. Ticker source ──────────────────────────────────────────────────
+        print(f"\n[1] Loading {src_label}...")
+        tickers = _get_universe(market) if args.universe else _get_watchlist(market)
         if not tickers:
-            print("  No tickers. Check GSheets or GOOGLE_CREDENTIALS_JSON.")
+            print("  No tickers. Check GSheets or run update_universe.py first.")
             continue
         print(f"  {len(tickers)} tickers: {', '.join(tickers[:8])}{'...' if len(tickers)>8 else ''}")
 
@@ -775,17 +873,30 @@ def main():
                 params = best["params"]
                 print(f"\n[{'5' if args.mode=='both' else '2'}] Paper simulation using grid-search params...")
             else:
-                # Load from GSheets or fall back to hardcoded
-                params = TW_BEST_PARAMS if market == "tw" else US_DEFAULT_PARAMS
-                print(f"\n[2] Paper simulation using {'GSheets live' if True else 'default'} params...")
+                # Load latest optimized params from GSheets, fall back to hardcoded
+                gs_params = _load_live_params(market)
+                if gs_params and all(v is not None for v in gs_params.values()):
+                    params = gs_params
+                    print(f"\n[2] Paper simulation using GSheets live params...")
+                else:
+                    params = TW_BEST_PARAMS if market == "tw" else US_DEFAULT_PARAMS
+                    print(f"\n[2] Paper simulation using hardcoded default params...")
                 print(f"  Params: {params}")
+
+            # Fetch broad market trend once (filters out entries during bear market)
+            mkt_trend = _build_market_trend(market, start_date, end_date)
+            if mkt_trend is not None:
+                bull_days = int(mkt_trend.sum())
+                total_days = len(mkt_trend)
+                print(f"  Market filter: {bull_days}/{total_days} days are bull (MA20>MA60) — will skip bear-day entries")
 
             print(f"  Collecting paper trades ({len(tickers)} tickers)...")
             all_trades: List[dict] = []
             for i, ticker in enumerate(tickers):
                 code = ticker.split(".")[0] if market == "tw" else ticker
                 trades = _collect_paper_trades(code, start_date, end_date,
-                                               params, args.hold, market=market)
+                                               params, args.hold, market=market,
+                                               market_trend=mkt_trend)
                 all_trades.extend(trades)
                 print(f"  [{i+1:3d}/{len(tickers)}] {ticker:8s}: {len(trades)} trades", flush=True)
 
