@@ -264,7 +264,7 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
     d["OBV_MA20"] = obv.rolling(20).mean()
 
     d["ret5d"]         = d["Close"].pct_change(5) * 100
-    d["is_extended"]   = d["ret5d"] > 8
+    d["is_extended"]   = d["ret5d"] > 5
     d["monthly_trend"] = (d["MA20"] > d["MA60"]) & (d["MA60"] > d["MA120"])
     return d
 
@@ -412,13 +412,14 @@ def _xgb_features(row: dict) -> List[float]:
 
 def run_grid_search(all_signals: List[dict], market: str, hold_days: int = 10) -> Optional[dict]:
     is_tw    = market == "tw"
-    rsi_los  = [50,52,54]      if is_tw else [45,50,55,60]
-    rsi_his  = [58,60,62]      if is_tw else [65,70,75,80]
-    adx_los  = [18,20,22,24]   if is_tw else [10,15,18,20]
-    adx_his  = [28,30,35]      if is_tw else [30,35,40,45]
-    mh_pcts  = [50,60,66]      if is_tw else [33,40,50,60]
-    bias_los = [0,2,4]
-    bias_his = [8]             if is_tw else [8,12,15]
+    # Tighter RSI / higher ADX / higher MACD_H to push win rate toward 85%
+    rsi_los  = [52,54,56,58]       if is_tw else [50,55,58,60]
+    rsi_his  = [60,62,64]          if is_tw else [65,68,72]
+    adx_los  = [20,22,24,26]       if is_tw else [15,18,20,22]
+    adx_his  = [32,36,40]          if is_tw else [32,36,40]
+    mh_pcts  = [60,66,70,75]       if is_tw else [50,60,66,70]
+    bias_los = [2,4]
+    bias_his = [7,8]               if is_tw else [8,10]
 
     grid = [
         {"rsi_lo":rsl,"rsi_hi":rsh,"adx_lo":adl,"adx_hi":adh,
@@ -437,28 +438,32 @@ def run_grid_search(all_signals: List[dict], market: str, hold_days: int = 10) -
                and p["adx_lo"] <= s["adx14"] <= p["adx_hi"]
                and s["macd_h_pct"] >= p["macd_h_pct_min"]
                and p["bias_lo"] <= s["bias"] <= p["bias_hi"]]
-        if len(sub) < 5:
+        if len(sub) < 8:   # raised from 5 → more statistical confidence
             continue
         rets   = [s["return_pct"] for s in sub]
         wins   = sum(1 for r in rets if r > 0)
+        wr     = wins / len(sub)
         avg    = float(np.mean(rets))
         std    = float(np.std(rets)) if len(rets) > 1 else 0.0
         sharpe = round(avg / std * (252 / hold_days) ** 0.5, 2) if std > 0 else None
-        if sharpe is None:
+        if sharpe is None or wr < 0.65:   # pre-filter: skip combos below 65% WR
             continue
+        # Score = Sharpe × WR bonus × sample confidence — n<15 gets penalized
+        score = sharpe * (wr / 0.65) * min(1.0, len(sub) / 15)
         results.append({
             "params":     p,
             "n_signals":  len(sub),
-            "win_rate":   round(wins / len(sub), 3),
+            "win_rate":   round(wr, 3),
             "avg_return": round(avg, 2),
             "sharpe":     sharpe,
+            "score":      round(score, 3),
         })
 
     if not results:
-        print("  No valid combos found.")
+        print("  No valid combos found (try --years 3 for more data).")
         return None
 
-    results.sort(key=lambda x: x["sharpe"], reverse=True)
+    results.sort(key=lambda x: x["score"], reverse=True)
     best = results[0]
     print(f"  Best params  : {best['params']}")
     print(f"  Win rate     : {best['win_rate']:.1%}  |  Sharpe: {best['sharpe']}  |  n={best['n_signals']}")
@@ -469,6 +474,31 @@ def run_grid_search(all_signals: List[dict], market: str, hold_days: int = 10) -
 
 
 # ── Paper trading simulation ───────────────────────────────────────────────────
+
+def _bt_is_buy(row: pd.Series, params: dict) -> bool:
+    """Return True if the row passes both base conditions and optimised param filters."""
+    try:
+        for col in ["MA20","VMA20","RSI14","Bias","MACD","MACD_Sig","ADX14","MACD_H"]:
+            if pd.isna(row.get(col, float("nan"))):
+                return False
+        if not (
+            row["Close"]  > row["MA20"]     and
+            row["Volume"] > row["VMA20"]    and
+            row["MACD"]   > row["MACD_Sig"] and
+            row["OBV"]    > row["OBV_MA20"] and
+            bool(row["monthly_trend"])       and
+            not bool(row["is_extended"])
+        ):
+            return False
+    except Exception:
+        return False
+    rsi  = float(row["RSI14"])
+    adx  = float(row["ADX14"])
+    bias = float(row["Bias"])
+    return (params["rsi_lo"]  <= rsi  <= params["rsi_hi"]  and
+            params["adx_lo"]  <= adx  <= params["adx_hi"]  and
+            params["bias_lo"] <= bias <= params["bias_hi"])
+
 
 def _collect_paper_trades(code: str, start_date: str, end_date: str,
                            params: dict, hold_days: int = 10, market: str = "tw") -> List[dict]:
@@ -491,6 +521,10 @@ def _collect_paper_trades(code: str, start_date: str, end_date: str,
     for idx, row in in_range.iterrows():
         if not _bt_is_buy(row, params):
             continue
+        past_mh = df["MACD_H"].iloc[max(0, idx - 50):idx].dropna()
+        mh_pct  = float((past_mh < float(row["MACD_H"])).mean() * 100) if len(past_mh) >= 5 else 50.0
+        if mh_pct < params.get("macd_h_pct_min", 0):
+            continue
         entry     = float(row["Close"])
         if entry <= 0: continue
         entry_atr = float(row["ATR14"]) if not pd.isna(row.get("ATR14", float("nan"))) else entry * 0.03
@@ -499,9 +533,10 @@ def _collect_paper_trades(code: str, start_date: str, end_date: str,
         future_idx = [i for i in df.index if i > idx]
         if len(future_idx) < 3: continue
 
-        exit_i      = future_idx[min(hold_days - 1, len(future_idx) - 1)]
-        exit_reason = "持滿天數"
+        exit_i          = future_idx[min(hold_days - 1, len(future_idx) - 1)]
+        exit_reason     = "持滿天數"
         prev_macd_above = True
+        below_ma10_days = 0   # 2-day confirmation counter
 
         for j, fi in enumerate(future_idx[:hold_days]):
             frow = df.loc[fi]
@@ -510,8 +545,14 @@ def _collect_paper_trades(code: str, start_date: str, end_date: str,
             if day >= 3:
                 if frow["RSI14"] > 70:
                     exit_i = fi; exit_reason = "RSI>70超買"; break
-                if not pd.isna(frow.get("MA10", float("nan"))) and frow["Close"] < frow["MA10"]:
-                    exit_i = fi; exit_reason = "跌破MA10"; break
+                # Require 2 consecutive days below MA10 to avoid false exits
+                ma10 = frow.get("MA10", float("nan"))
+                if not pd.isna(ma10) and frow["Close"] < ma10:
+                    below_ma10_days += 1
+                    if below_ma10_days >= 2:
+                        exit_i = fi; exit_reason = "跌破MA10×2日"; break
+                else:
+                    below_ma10_days = 0
                 if prev_macd_above and not macd_above:
                     exit_i = fi; exit_reason = "MACD死叉"; break
                 if frow["Close"] < atr_stop:

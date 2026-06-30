@@ -1701,7 +1701,7 @@ def _compute_bt_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # 5-day return (extended check)
     d["ret5d"]      = d["Close"].pct_change(5) * 100
-    d["is_extended"]= d["ret5d"] > 8
+    d["is_extended"]= d["ret5d"] > 5
 
     # Monthly trend proxy: MA20 > MA60 > MA120
     d["monthly_trend"] = (d["MA20"] > d["MA60"]) & (d["MA60"] > d["MA120"])
@@ -1856,9 +1856,10 @@ def _backtest_ticker(
         if len(future_idx) < 3:
             continue
 
-        exit_i      = future_idx[min(hold_days - 1, len(future_idx) - 1)]
-        exit_reason = "持滿天數"
-        prev_macd_above = True  # at entry MACD > Sig (buy condition)
+        exit_i          = future_idx[min(hold_days - 1, len(future_idx) - 1)]
+        exit_reason     = "持滿天數"
+        prev_macd_above = True
+        below_ma10_days = 0
 
         for j, fi in enumerate(future_idx[:hold_days]):
             frow = df.loc[fi]
@@ -1868,8 +1869,13 @@ def _backtest_ticker(
             if day >= 3:
                 if frow["RSI14"] > 70:
                     exit_i = fi; exit_reason = "RSI>70超買"; break
-                if not pd.isna(frow.get("MA10", float("nan"))) and frow["Close"] < frow["MA10"]:
-                    exit_i = fi; exit_reason = "跌破MA10"; break
+                ma10 = frow.get("MA10", float("nan"))
+                if not pd.isna(ma10) and frow["Close"] < ma10:
+                    below_ma10_days += 1
+                    if below_ma10_days >= 2:
+                        exit_i = fi; exit_reason = "跌破MA10×2日"; break
+                else:
+                    below_ma10_days = 0
                 if prev_macd_above and not macd_above:
                     exit_i = fi; exit_reason = "MACD死叉"; break
                 if frow["Close"] < atr_stop:

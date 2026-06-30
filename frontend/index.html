@@ -1924,6 +1924,29 @@
               </div>
               {showGuide && (
                 <div style={{marginTop:16}}>
+                  {/* v8.0 highlight */}
+                  <div style={{background:'linear-gradient(135deg,rgba(63,185,80,0.1),rgba(99,102,241,0.06))',border:'1px solid rgba(63,185,80,0.25)',borderRadius:12,padding:'12px 16px',marginBottom:10,display:'flex',gap:12,alignItems:'flex-start'}}>
+                    <span style={{fontSize:22,flexShrink:0}}>🎯</span>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:13,color:'#4ade80',marginBottom:6}}>v8.0 勝率優化 — 台股 71.4% 通過 Go/No-Go ✅</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:'5px 20px',fontSize:12,color:'var(--text-secondary)'}}>
+                        {[
+                          ['📐','更嚴格進場門檻','RSI 56-60 / ADX 22-32 / Bias 2-7%（更窄的買進甜區）'],
+                          ['🔁','2日MA10確認出場','跌破MA10需連續2天才出場，消除假突破誤殺'],
+                          ['🛡️','5%延伸過濾升級','5日漲幅>5%即為追高，拒絕進場（原為8%）'],
+                          ['⚖️','樣本信心加權','Grid Search評分加入樣本數權重，優先選有統計意義的組合'],
+                          ['📊','兩年回測結果','14筆交易 / 勝率71.4% / 最大連虧2筆 / 年化45.2%'],
+                        ].map(([icon,title,desc])=>(
+                          <span key={title} style={{display:'flex',alignItems:'flex-start',gap:4,minWidth:'100%'}}>
+                            <span>{icon}</span>
+                            <span style={{fontWeight:600,color:'var(--text-primary)'}}>{title}</span>
+                            <span style={{color:'var(--text-muted)'}}> — {desc}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
                   {/* v7.0 highlight */}
                   <div style={{background:'linear-gradient(135deg,rgba(99,102,241,0.1),rgba(129,140,248,0.06))',border:'1px solid rgba(129,140,248,0.2)',borderRadius:12,padding:'12px 16px',marginBottom:10,display:'flex',gap:12,alignItems:'flex-start'}}>
                     <span style={{fontSize:22,flexShrink:0}}>✨</span>
