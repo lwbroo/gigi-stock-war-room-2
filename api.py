@@ -55,6 +55,7 @@ _INST_CACHE:    dict = {}
 _INFO_CACHE:    dict = {}        # ticker -> {"info": {...}, "ts": float}
 _FINMIND_CACHE: dict = {}        # code   -> {"data": {...}, "ts": float}
 _PREV_SIGNALS:  dict = {"date": "", "signals": {}}
+_SCAN_CACHE:    dict = {}        # market -> {"data": [...], "scanned_at": str, "ts": float}
 
 
 # ── Company names ─────────────────────────────────────────────────────────────
@@ -655,6 +656,11 @@ SCAN_CACHE_TAB = "scan_cache"
 @app.get("/api/scan/cache")
 async def get_scan_cache(market: str = "tw"):
     """Return pre-computed scan results from GSheets scan_cache (written by scan_local.py)."""
+    # Serve from in-memory cache if fresh (< 6 hours)
+    cached = _SCAN_CACHE.get(market)
+    if cached and time.time() - cached["ts"] < 21600:
+        return {"status":"ok","market":market,
+                "scanned_at":cached["scanned_at"],"data":cached["data"]}
     try:
         ws = _get_or_create_tab(SCAN_CACHE_TAB, ["scanned_at","market","ticker"])
         if not ws:
@@ -723,9 +729,18 @@ async def get_scan_cache(market: str = "tw"):
                 })
             except Exception:
                 pass
+        # Store in memory for fast subsequent reads
+        _SCAN_CACHE[market] = {"data": results, "scanned_at": scanned_at, "ts": time.time()}
         return {"status":"ok","market":market,"scanned_at":scanned_at,"data":results}
     except Exception as e:
         return {"status":"error","reason":str(e),"data":[]}
+
+
+# Invalidate in-memory scan cache when new local results are pushed
+@app.post("/api/scan/cache/reload")
+async def reload_scan_cache(market: str = "tw"):
+    _SCAN_CACHE.pop(market, None)
+    return {"status":"ok","reloaded":market}
 
 
 @app.post("/api/scan")

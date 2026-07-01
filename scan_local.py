@@ -738,6 +738,15 @@ def _save_scan_cache(sh, results: list, market: str):
     ws.clear()
     ws.update("A1", [header] + keep + rows)
     print(f"  ↑ scan_cache: {len(rows)} rows written [{market}]")
+    # Notify cloud to clear in-memory cache so next fetch reads fresh data
+    try:
+        r = requests.post(
+            f"https://gigi-stock-war-room-2.onrender.com/api/scan/cache/reload?market={market}",
+            timeout=10,
+        )
+        print(f"  ↑ Cloud cache reloaded: HTTP {r.status_code}")
+    except Exception:
+        pass  # non-critical
 
 
 def _save_scan_log(sh, results: list, market: str):
