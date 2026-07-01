@@ -738,15 +738,16 @@ def _save_scan_cache(sh, results: list, market: str):
     ws.clear()
     ws.update("A1", [header] + keep + rows)
     print(f"  ↑ scan_cache: {len(rows)} rows written [{market}]")
-    # Notify cloud to clear in-memory cache so next fetch reads fresh data
+    # Notify cloud to clear in-memory cache, then immediately pre-warm it
+    base = "https://gigi-stock-war-room-2.onrender.com"
     try:
-        r = requests.post(
-            f"https://gigi-stock-war-room-2.onrender.com/api/scan/cache/reload?market={market}",
-            timeout=10,
-        )
-        print(f"  ↑ Cloud cache reloaded: HTTP {r.status_code}")
-    except Exception:
-        pass  # non-critical
+        requests.post(f"{base}/api/scan/cache/reload?market={market}", timeout=10)
+        # Pre-warm: trigger a GET so the next frontend request is served from memory
+        r = requests.get(f"{base}/api/scan/cache?market={market}", timeout=60)
+        d = r.json()
+        print(f"  ↑ Cloud cache pre-warmed: {len(d.get('data',[]))} rows [{market}]")
+    except Exception as e:
+        print(f"  ! Cloud cache warm-up skipped: {e}")
 
 
 def _save_scan_log(sh, results: list, market: str):
