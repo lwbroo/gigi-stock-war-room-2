@@ -650,6 +650,84 @@ def send_telegram(msg: str, bot_token: str, chat_id: str):
         )
     except Exception: pass
 
+SCAN_CACHE_TAB = "scan_cache"
+
+@app.get("/api/scan/cache")
+async def get_scan_cache(market: str = "tw"):
+    """Return pre-computed scan results from GSheets scan_cache (written by scan_local.py)."""
+    try:
+        ws = _get_or_create_tab(SCAN_CACHE_TAB, ["scanned_at","market","ticker"])
+        if not ws:
+            return {"status":"no_data","market":market,"data":[]}
+        all_rows = ws.get_all_values()
+        if len(all_rows) < 2:
+            return {"status":"no_data","market":market,"data":[]}
+        hdr = all_rows[0]
+        def _ci(col):
+            return hdr.index(col) if col in hdr else None
+        def _f(r, col):
+            i = _ci(col)
+            if i is None or i >= len(r) or r[i] == "": return None
+            try: return float(r[i])
+            except: return r[i]
+        def _b(r, col):
+            v = _f(r, col)
+            return str(v).lower() in ("true","1","yes") if v is not None else None
+        rows = [r for r in all_rows[1:] if r and len(r) > 2 and r[1] == market]
+        scanned_at = rows[0][0] if rows else None
+        results = []
+        for r in rows:
+            try:
+                results.append({
+                    "ticker":         r[_ci("ticker")] if _ci("ticker") is not None else "",
+                    "companyName":    r[_ci("company_name")] if _ci("company_name") is not None else "",
+                    "close":          _f(r,"close"),  "open": _f(r,"open"),
+                    "high":           _f(r,"high"),   "low":  _f(r,"low"),
+                    "volume":         _f(r,"volume"),  "vol_ma20": _f(r,"vol_ma20"),
+                    "ma20":           _f(r,"ma20"),   "ma60": _f(r,"ma60"), "ma120": _f(r,"ma120"),
+                    "rsi14":          _f(r,"rsi14"),  "bias": _f(r,"bias"),
+                    "adx14":          _f(r,"adx14"),  "di_plus": _f(r,"di_plus"), "di_minus": _f(r,"di_minus"),
+                    "macd_cross":     _f(r,"macd_cross"),
+                    "macd_line":      _f(r,"macd_line"), "macd_signal": _f(r,"macd_signal"), "macd_hist": _f(r,"macd_hist"),
+                    "obv_trend":      _f(r,"obv_trend"),
+                    "monthly_trend":  _b(r,"monthly_trend"), "weekly_trend": _b(r,"weekly_trend"),
+                    "is_breakout20":  _b(r,"is_breakout20"), "vol_expansion": _b(r,"vol_expansion"),
+                    "week52_high":    _f(r,"week52_high"), "week52_low": _f(r,"week52_low"),
+                    "pct_from_52high":_f(r,"pct_from_52high"),
+                    "rs_score":       _f(r,"rs_score"), "max_drawdown_1y": _f(r,"max_drawdown_1y"),
+                    "stop_loss":      _f(r,"stop_loss"), "target_price": _f(r,"target_price"),
+                    "pattern":        _f(r,"pattern") or "",
+                    "inst_foreign":   _f(r,"inst_foreign"), "inst_trust": _f(r,"inst_trust"),
+                    "week5d_return":  _f(r,"week5d_return"), "is_extended": _b(r,"is_extended"),
+                    "eps_growth":     _f(r,"eps_growth"), "revenue_growth": _f(r,"revenue_growth"),
+                    "earnings_date":  _f(r,"earnings_date"), "near_earnings": _b(r,"near_earnings"),
+                    "est_eps":        _f(r,"est_eps"), "est_dividend": _f(r,"est_dividend"),
+                    "est_rev_growth": _f(r,"est_rev_growth"),
+                    "market_regime_bull":  _b(r,"market_regime_bull"),
+                    "market_week_return":  _f(r,"market_week_return"),
+                    "market_week_rising":  _b(r,"market_week_rising"),
+                    "signal":              _f(r,"signal") or "NO",
+                    "confirmed_signal":    _b(r,"confirmed_signal"),
+                    "conds": {
+                        "price":  _b(r,"conds_price"),  "volume": _b(r,"conds_volume"),
+                        "trend":  _b(r,"conds_trend"),  "candle": _b(r,"conds_candle"),
+                        "rsi":    _b(r,"conds_rsi"),    "bias":   _b(r,"conds_bias"),
+                    },
+                    "sell_flags": {
+                        "is_trend_broken":       _b(r,"sell_trend_broken"),
+                        "is_momentum_lost":      _b(r,"sell_momentum_lost"),
+                        "is_heavy_distribution": _b(r,"sell_heavy_dist"),
+                    },
+                    "xgb_prob": _f(r,"xgb_prob"),
+                    "predicted_return": None,
+                })
+            except Exception:
+                pass
+        return {"status":"ok","market":market,"scanned_at":scanned_at,"data":results}
+    except Exception as e:
+        return {"status":"error","reason":str(e),"data":[]}
+
+
 @app.post("/api/scan")
 async def scan_stocks(request: ScanRequest):
     results = []
