@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -437,7 +438,8 @@ def send_telegram(msg: str, bot_token: str, chat_id: str):
 # ── Core scan logic ───────────────────────────────────────────────────────────
 
 def scan_ticker(ticker: str, market: str, params: dict, inst_data: dict,
-                index_df: Optional[pd.DataFrame], prev_signals: dict) -> dict:
+                index_df: Optional[pd.DataFrame], prev_signals: dict,
+                pre_df: Optional[pd.DataFrame] = None) -> dict:
     """Compute all indicators and signal for one ticker. Returns result dict."""
 
     index_20d_return = None
@@ -464,15 +466,20 @@ def scan_ticker(ticker: str, market: str, params: dict, inst_data: dict,
         }
 
     try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period="1y")
-        company_name = get_company_name(ticker)
-        if company_name == ticker:
-            try:
-                info = stock.info
-                company_name = info.get("shortName") or info.get("longName") or ticker
-            except Exception:
-                pass
+        stock = None
+        if pre_df is not None:
+            df = pre_df.copy()
+            company_name = get_company_name(ticker)
+        else:
+            stock = yf.Ticker(ticker)
+            df = stock.history(period="1y")
+            company_name = get_company_name(ticker)
+            if company_name == ticker:
+                try:
+                    info = stock.info
+                    company_name = info.get("shortName") or info.get("longName") or ticker
+                except Exception:
+                    pass
 
         if df.empty or len(df) < 136:
             return _no_data()
@@ -617,31 +624,38 @@ def scan_ticker(ticker: str, market: str, params: dict, inst_data: dict,
         confirmed_signal = prev_signals.get(ticker, False)
 
         # ── Fundamentals ──────────────────────────────────────────────────────
-        fundamentals = _get_fundamentals(stock)
+        # Skip expensive stock.info calls when using batch price data (pre_df).
+        # Fundamentals are display-only and don't affect buy/sell signals.
         fm_est: dict = {}
-        if market == "tw":
-            try:
-                info = stock.info
-                shares = int(info.get("sharesOutstanding", 0) or 0)
-                if shares == 0:
-                    mktcap = int(info.get("marketCap", 0) or 0)
-                    price = float(c_close) if c_close else 0
-                    if mktcap > 0 and price > 0:
-                        shares = int(mktcap / price)
-                if shares == 0:
-                    try:
-                        shares = int(stock.fast_info.shares or 0)
-                    except Exception:
-                        pass
-            except Exception:
-                shares = 0
-            fm = _get_finmind_fundamentals(ticker.split(".")[0], shares_actual=shares)
-            if fm["eps_growth"] is not None:
-                fundamentals["eps_growth"] = fm["eps_growth"]
-            if fm["revenue_growth"] is not None:
-                fundamentals["revenue_growth"] = fm["revenue_growth"]
-            fm_est = {"est_eps": fm.get("est_eps"), "est_dividend": fm.get("est_dividend"),
-                      "est_rev_growth": fm.get("est_rev_growth")}
+        if pre_df is None:
+            if stock is None:
+                stock = yf.Ticker(ticker)
+            fundamentals = _get_fundamentals(stock)
+            if market == "tw":
+                try:
+                    info = stock.info
+                    shares = int(info.get("sharesOutstanding", 0) or 0)
+                    if shares == 0:
+                        mktcap = int(info.get("marketCap", 0) or 0)
+                        price = float(c_close) if c_close else 0
+                        if mktcap > 0 and price > 0:
+                            shares = int(mktcap / price)
+                    if shares == 0:
+                        try:
+                            shares = int(stock.fast_info.shares or 0)
+                        except Exception:
+                            pass
+                except Exception:
+                    shares = 0
+                fm = _get_finmind_fundamentals(ticker.split(".")[0], shares_actual=shares)
+                if fm["eps_growth"] is not None:
+                    fundamentals["eps_growth"] = fm["eps_growth"]
+                if fm["revenue_growth"] is not None:
+                    fundamentals["revenue_growth"] = fm["revenue_growth"]
+                fm_est = {"est_eps": fm.get("est_eps"), "est_dividend": fm.get("est_dividend"),
+                          "est_rev_growth": fm.get("est_rev_growth")}
+        else:
+            fundamentals = {"eps_growth": None, "revenue_growth": None, "earnings_date": None, "near_earnings": False}
 
         pattern    = _detect_pattern(df.tail(5))
         stop_loss  = round(float(ma20) * 0.97, 2)
@@ -802,22 +816,65 @@ def run_scan(market: str, notify: bool, dry_run: bool):
     print("[5] Loading previous signals...")
     prev_signals = _load_prev_signals(sh)
 
-    print(f"[6] Scanning {len(tickers)} tickers...\n")
-    results = []
-    buy_rows, sell_rows, warn_rows = [], [], []
+    print(f"[6] Batch downloading {len(tickers)} tickers from yfinance...")
     t0 = time.time()
+    try:
+        raw = yf.download(
+            tickers, period="1y", group_by="ticker",
+            auto_adjust=True, progress=False, threads=True,
+        )
+        # Build per-ticker DataFrames from the MultiIndex result
+        if len(tickers) == 1:
+            # Single ticker: flat columns
+            batch_data = {tickers[0]: raw.dropna(how="all")} if not raw.empty else {}
+        else:
+            batch_data = {}
+            for t in tickers:
+                try:
+                    sub = raw[t].dropna(how="all")
+                    if not sub.empty:
+                        batch_data[t] = sub
+                except Exception:
+                    pass
+        print(f"     Batch download done in {time.time()-t0:.0f}s — {len(batch_data)}/{len(tickers)} tickers OK")
+    except Exception as e:
+        print(f"     Batch download failed ({e}), falling back to individual downloads")
+        batch_data = {}
 
-    for i, ticker in enumerate(tickers, 1):
-        r = scan_ticker(ticker, market, params, inst_data, index_df, prev_signals)
-        results.append(r)
+    workers = min(15, len(tickers))
+    print(f"     Scanning with {workers} parallel workers...\n")
+    results_map = {}
+    completed = 0
 
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                scan_ticker, ticker, market, params, inst_data, index_df, prev_signals,
+                batch_data.get(ticker)  # None → fallback to individual yfinance call
+            ): ticker
+            for ticker in tickers
+        }
+        for fut in as_completed(futures):
+            ticker = futures[fut]
+            completed += 1
+            try:
+                r = fut.result()
+            except Exception as exc:
+                r = {"ticker": ticker, "signal": "ERROR", "error": str(exc)}
+            results_map[ticker] = r
+            sig = r.get("signal", "?")
+            name = r.get("company_name", "")[:10]
+            close = r.get("close", "—")
+            rsi = r.get("rsi14", "—")
+            label = "🟢 BUY" if sig == "YES" else ("❌" if sig in ("NO_DATA", "ERROR") else "  ")
+            print(f"  [{completed:>3}/{len(tickers)}] {ticker:<12} {name:<12} close={close}  RSI={rsi}  {label}")
+
+    # Restore original watchlist order
+    results = [results_map[t] for t in tickers if t in results_map]
+
+    buy_rows, sell_rows, warn_rows = [], [], []
+    for r in results:
         sig = r.get("signal", "?")
-        name = r.get("company_name", "")[:10]
-        close = r.get("close", "—")
-        rsi = r.get("rsi14", "—")
-        label = "🟢 BUY" if sig == "YES" else ("❌" if sig in ("NO_DATA", "ERROR") else "  ")
-        print(f"  [{i:>2}/{len(tickers)}] {ticker:<12} {name:<12} close={close}  RSI={rsi}  {label}")
-
         if sig == "YES":
             buy_rows.append(r)
         sf = r.get("sell_flags", {})
