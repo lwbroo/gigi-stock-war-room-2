@@ -58,6 +58,7 @@ _PAPER_RESULTS_HDR = ["run_at","market","start_date","end_date","n_tickers","tot
                       "monthly_wr","exit_reasons"]
 _LIVE_PARAMS_CACHE: Dict[str, dict] = {}
 _LIVE_PARAMS_TS:    Dict[str, float] = {}
+_XGB_MODEL_CACHE:   Dict[str, object] = {}
 
 def _get_live_params(market: str) -> Optional[dict]:
     now = time.time()
