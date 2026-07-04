@@ -1082,23 +1082,16 @@
         if (activeTab === 'model') { fetchPaperRpt(market); fetchModelStats(market); }
       }, [activeTab, market]);
 
-      // ── midnight auto-scan ─────────────────────────────────────────────────────
+      // ── midnight auto-scan (reads local scan_cache pushed by scan_local.py) ──────
       const performAutoScan = async () => {
         setAutoScanning(true);
         for (const mkt of ['tw','us']) {
           try {
-            const wlR = await fetch(`${API_BASE}/api/watchlist?market=${mkt}`);
-            if (!wlR.ok) continue;
-            const wlD = await wlR.json();
-            const list = wlD.tickers || [];
-            if (!list.length) continue;
-            const scanR = await fetch(`${API_BASE}/api/scan`, {
-              method: 'POST', headers: { 'Content-Type':'application/json' },
-              body: JSON.stringify({ tickers: list, market: mkt, tg_bot_token: tgBotTokenRef.current, tg_chat_id: tgChatIdRef.current }),
-            });
+            const scanR = await fetch(`${API_BASE}/api/scan/cache?market=${mkt}`);
             if (!scanR.ok) continue;
             const scanD = await scanR.json();
-            const entry = { data: scanD.data||[], scannedAt: new Date().toISOString(), auto: true };
+            if (scanD.status !== 'ok' || !scanD.data?.length) continue;
+            const entry = { data: scanD.data||[], scannedAt: scanD.scanned_at || new Date().toISOString(), auto: true };
             setSavedResults(prev => ({ ...prev, [mkt]: entry }));
             if (mkt === marketRef.current) setScanResults(scanD.data||[]);
             addToHistory(scanD.data||[], mkt, true);
@@ -1176,23 +1169,34 @@
 
       // ── manual scan ───────────────────────────────────────────────────────────
       const runScan = async () => {
-        const currentTickers = tickersRef.current;
-        if (!currentTickers.length) return;
         const mkt = market;
         setScanning(true); setScanError(''); setScanResults([]);
         try {
-          const r = await fetch(`${API_BASE}/api/scan`, {
-            method: 'POST', headers: { 'Content-Type':'application/json' },
-            body: JSON.stringify({ tickers: currentTickers, market: mkt, tg_bot_token: tgBotToken, tg_chat_id: tgChatId }),
-          });
+          // Read pre-computed results from local scan cache (pushed by scan_local.py)
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 40000); // 40s timeout
+          let r;
+          try {
+            r = await fetch(`${API_BASE}/api/scan/cache?market=${mkt}`, { signal: ctrl.signal });
+          } catch (fetchErr) {
+            if (fetchErr.name === 'AbortError') {
+              throw new Error('伺服器冷啟動中，請稍候 30 秒後再試一次');
+            }
+            throw fetchErr;
+          } finally {
+            clearTimeout(tid);
+          }
           const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || 'Scan failed');
+          if (!r.ok) throw new Error(d.detail || 'Failed to load scan cache');
+          if (d.status === 'no_data' || !d.data?.length) {
+            setScanError('尚無掃描資料 — 請在本機執行：python3 scan_local.py --market ' + mkt);
+            setScanning(false); return;
+          }
           setScanResults(d.data||[]);
-          const entry = { data: d.data||[], scannedAt: new Date().toISOString(), auto: false };
+          const entry = { data: d.data||[], scannedAt: d.scanned_at || new Date().toISOString(), auto: false };
           setSavedResults(prev => ({ ...prev, [mkt]: entry }));
           addToHistory(d.data||[], mkt, false);
           await checkAlerts(d.data||[], mkt);
-          // v5.0: refresh regression coeffs after scan
           fetchRegCoeffs(mkt);
         } catch (e) { setScanError(e.message); }
         setScanning(false);
@@ -1234,18 +1238,7 @@
       };
 
       const trainModel = async () => {
-        setRegLoading(true); setRegStatus('');
-        try {
-          const r = await fetch(`${API_BASE}/api/regression/train?market=${market}`, {method:'POST'});
-          const data = await r.json();
-          if (data.status === 'ok') {
-            setRegStatus(`✅ 訓練完成！R²=${data.r2.toFixed(3)}，使用 ${data.n_samples} 筆數據`);
-            await fetchRegCoeffs(market);
-          } else {
-            setRegStatus(`⏳ ${data.message}`);
-          }
-        } catch(e) { setRegStatus('❌ 訓練失敗: ' + e.message); }
-        setRegLoading(false);
+        setRegStatus('模型訓練已移至本機執行。請在 Mac 上運行：python3 simulate.py --mode paper --market ' + market);
       };
 
       // ── price alerts ──────────────────────────────────────────────────────────
@@ -1308,44 +1301,15 @@
       };
       const resetThresholds = () => { setThresholds({...DEFAULT_THRESH}); saveLS('gigiThresholds', {...DEFAULT_THRESH}); };
 
-      // ── backtest (FinMind full historical) ────────────────────────────────────
+      // ── backtest — moved to local Mac ─────────────────────────────────────────
       const runBacktest = async () => {
-        if (!btSelected.length) return;
-        setBtLoading(true); setBtError(''); setBtResults([]); setBtSummary(null); setBtExpandedRow(null); setBtAnalysis(null);
-        try {
-          const r = await fetch(`${API_BASE}/api/backtest/full`, {
-            method: 'POST', headers: { 'Content-Type':'application/json' },
-            body: JSON.stringify({
-              tickers: btSelected, market,
-              start_date: btStartDate, end_date: btEndDate,
-              hold_days: btHoldDays,
-            }),
-          });
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || 'Backtest failed');
-          setBtResults(d.results || []);
-          setBtSummary(d.summary || null);
-          setBtAnalysis(d.condition_analysis || null);
-        } catch(e) { setBtError(e.message); }
-        setBtLoading(false);
+        setBtError('回測已移至本機執行。請在 Mac 上運行：python3 simulate.py --mode paper --market ' + market);
       };
 
       const toggleBtTicker = (t) => setBtSelected(prev => prev.includes(t) ? prev.filter(x=>x!==t) : [...prev, t]);
 
       const runGridSearch = async () => {
-        if (!btSelected.length) return;
-        setGsLoading(true); setGsError(''); setGsResults(null);
-        try {
-          const r = await fetch(`${API_BASE}/api/backtest/gridsearch`, {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ tickers: btSelected, market, start_date: btStartDate, end_date: btEndDate, hold_days: btHoldDays }),
-          });
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.detail || 'Grid search failed');
-          if (d.error) throw new Error(d.error);
-          setGsResults(d);
-        } catch(e) { setGsError(e.message); }
-        setGsLoading(false);
+        setGsError('Grid Search 已移至本機執行。請在 Mac 上運行：python3 simulate.py --mode optimize --market ' + market);
       };
 
       // ── import ────────────────────────────────────────────────────────────────
@@ -1623,11 +1587,11 @@
                 </button>
               </div>
               <div className="scan-row">
-                <button className="btn btn-scan" onClick={runScan} disabled={scanning||autoScanning||!tickers.length}>
-                  {scanning ? <><span className="spinner"></span>Scanning…</> : '▶ Run Scan'}
+                <button className="btn btn-scan" onClick={runScan} disabled={scanning||autoScanning}>
+                  {scanning ? <><span className="spinner"></span>載入中…</> : '▶ 載入掃描結果'}
                 </button>
                 <span className="scan-hint">
-                  {tickers.length === 0 ? `Add ${meta.label} tickers first` : `${tickers.length} ticker${tickers.length!==1?'s':''} · 6-condition professional filter`}
+                  讀取本機掃描快取 — 每日執行：<code style={{background:'var(--bg-2)',padding:'1px 5px',borderRadius:3,fontSize:11}}>python3 scan_local.py</code>
                 </span>
               </div>
               <div className="cond-label">Signal conditions — click to toggle:</div>
@@ -2746,6 +2710,83 @@
                         </div>
                       ))}
                     </div>
+                  </div>
+                );
+              })()}
+
+              {/* ── 回測詳細報告 ── */}
+              {paperRpt && (() => {
+                const p = paperRpt;
+                const hasMonthly  = p.monthly_wr  && Object.keys(p.monthly_wr).length  > 0;
+                const hasReasons  = p.exit_reasons && Object.keys(p.exit_reasons).length > 0;
+                const exitColors  = {'RSI>70超買':'var(--accent)','跌破MA10×2日':'var(--yellow)','MACD死叉':'#e3a614','ATR停損':'var(--red)','持滿天數':'var(--text-muted)'};
+                return (
+                  <div className="card" style={{marginBottom:16}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+                      <span style={{fontWeight:700,fontSize:15}}>📊 回測詳細報告</span>
+                      <span style={{fontSize:11,color:'var(--text-muted)'}}>{p.start_date} → {p.end_date} · {p.total_trades}筆交易</span>
+                    </div>
+
+                    {/* 8-KPI grid */}
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:16}}>
+                      {[
+                        {label:'總交易',   val:`${p.total_trades}筆`,                      col:null},
+                        {label:'平均獲利', val:p.avg_win_pct  != null ? `+${p.avg_win_pct.toFixed(1)}%`  : '—', col:'var(--green)'},
+                        {label:'平均虧損', val:p.avg_loss_pct != null ? `${p.avg_loss_pct.toFixed(1)}%`  : '—', col:'var(--red)'},
+                        {label:'最大獲利', val:p.max_win_pct  != null ? `+${p.max_win_pct.toFixed(1)}%`  : '—', col:'var(--green)'},
+                        {label:'最大虧損', val:p.max_loss_pct != null ? `${p.max_loss_pct.toFixed(1)}%`  : '—', col:'var(--red)'},
+                        {label:'累積報酬', val:p.cumulative_return_pct != null ? `+${p.cumulative_return_pct.toFixed(1)}%` : '—', col:'var(--accent)'},
+                        {label:'平均持倉', val:p.avg_held_days != null ? `${p.avg_held_days}天` : '—', col:null},
+                        {label:'Sharpe',   val:p.sharpe != null ? p.sharpe.toFixed(2) : '—', col:p.sharpe > 2 ? 'var(--green)' : p.sharpe > 1 ? 'var(--yellow)' : 'var(--red)'},
+                      ].map(({label,val,col}) => (
+                        <div key={label} style={{background:'var(--bg-2)',border:'1px solid var(--border)',borderRadius:8,padding:'8px 10px',textAlign:'center'}}>
+                          <div style={{fontSize:14,fontWeight:700,color:col||'var(--text-primary)'}}>{val}</div>
+                          <div style={{fontSize:10,color:'var(--text-muted)',marginTop:2}}>{label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Monthly win rate bars */}
+                    {hasMonthly && (
+                      <div style={{marginBottom:16}}>
+                        <div style={{fontSize:12,fontWeight:600,color:'var(--text-muted)',marginBottom:8}}>每月勝率</div>
+                        {Object.entries(p.monthly_wr).map(([mo, d]) => {
+                          const col = d.wr >= 0.65 ? 'var(--green)' : d.wr >= 0.4 ? 'var(--yellow)' : 'var(--red)';
+                          return (
+                            <div key={mo} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+                              <div style={{fontSize:11,color:'var(--text-muted)',width:58,flexShrink:0}}>{mo}</div>
+                              <div style={{flex:1,height:14,background:'var(--bg-3,var(--bg-2))',borderRadius:4,overflow:'hidden'}}>
+                                <div style={{width:`${Math.round(d.wr*100)}%`,height:'100%',background:col,borderRadius:4}}></div>
+                              </div>
+                              <div style={{fontSize:11,fontWeight:600,color:col,width:36,textAlign:'right'}}>{(d.wr*100).toFixed(0)}%</div>
+                              <div style={{fontSize:10,color:'var(--text-muted)',width:70,textAlign:'right'}}>{d.w}/{d.n} · avg {d.avg > 0 ? '+' : ''}{d.avg}%</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Exit reason distribution */}
+                    {hasReasons && (
+                      <div>
+                        <div style={{fontSize:12,fontWeight:600,color:'var(--text-muted)',marginBottom:8}}>出場原因分布</div>
+                        {(() => {
+                          const total = Object.values(p.exit_reasons).reduce((a,b) => a+b, 0);
+                          return Object.entries(p.exit_reasons).sort((a,b) => b[1]-a[1]).map(([reason,cnt]) => {
+                            const pct = cnt / total;
+                            return (
+                              <div key={reason} style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
+                                <div style={{fontSize:11,color:'var(--text-muted)',width:90,flexShrink:0}}>{reason}</div>
+                                <div style={{flex:1,height:12,background:'var(--bg-3,var(--bg-2))',borderRadius:3,overflow:'hidden'}}>
+                                  <div style={{width:`${Math.round(pct*100)}%`,height:'100%',background:exitColors[reason]||'var(--accent)',borderRadius:3}}></div>
+                                </div>
+                                <div style={{fontSize:10,color:'var(--text-muted)',width:60,textAlign:'right'}}>{cnt}筆 ({(pct*100).toFixed(0)}%)</div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
                   </div>
                 );
               })()}

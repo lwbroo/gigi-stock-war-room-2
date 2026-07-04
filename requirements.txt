@@ -1,13 +1,6 @@
 fastapi
 uvicorn
-yfinance
-pandas
-numpy
 requests
 gspread
 google-auth
-openai
 anthropic
-xgboost
-scikit-learn
-playwright
