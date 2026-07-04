@@ -34,8 +34,50 @@ _SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
+import datetime as _dt
+
 SCAN_LOG_TAB   = "scan_log"
 REG_COEFFS_TAB = "regression_coeffs"
+
+# ── GSheets tab names & headers (used by lightweight read endpoints) ───────────
+_OUTCOME_TAB      = "signal_outcomes"
+_OUTCOME_HDR      = ["signal_date","ticker","market","close_signal",
+                     "rsi14","adx14","bias","macd_cross","vol_expansion","confirmed",
+                     "close_5d","return_5d","close_10d","return_10d","win"]
+_MODEL_PARAMS_TAB = "model_params"
+_MODEL_PARAMS_HDR = ["market","rsi_lo","rsi_hi","adx_lo","adx_hi",
+                     "bias_lo","bias_hi","macd_h_pct_min","win_rate","sharpe","updated"]
+_MODEL_STORE_TAB  = "model_store"
+_MODEL_STORE_HDR  = ["market","model_b64","trained_at","n_samples","accuracy"]
+_PAPER_RESULTS_TAB = "paper_results"
+_PAPER_RESULTS_HDR = ["run_at","market","start_date","end_date","n_tickers","total_trades",
+                      "win_rate","avg_return_pct","annual_return_pct","cumulative_return_pct",
+                      "max_consec_loss","sharpe","avg_held_days","passed",
+                      "rsi_lo","rsi_hi","adx_lo","adx_hi","bias_lo","bias_hi","macd_h_pct_min",
+                      "avg_win_pct","avg_loss_pct","max_win_pct","max_loss_pct",
+                      "monthly_wr","exit_reasons"]
+_LIVE_PARAMS_CACHE: Dict[str, dict] = {}
+_LIVE_PARAMS_TS:    Dict[str, float] = {}
+
+def _get_live_params(market: str) -> Optional[dict]:
+    now = time.time()
+    if market in _LIVE_PARAMS_CACHE and now - _LIVE_PARAMS_TS.get(market, 0) < 3600:
+        return _LIVE_PARAMS_CACHE[market]
+    try:
+        ws = _get_or_create_tab(_MODEL_PARAMS_TAB, _MODEL_PARAMS_HDR)
+        if not ws: return None
+        for row in ws.get_all_values()[1:]:
+            if len(row) >= 8 and row[0] == market:
+                p = {"rsi_lo":float(row[1]),"rsi_hi":float(row[2]),
+                     "adx_lo":float(row[3]),"adx_hi":float(row[4]),
+                     "bias_lo":float(row[5]),"bias_hi":float(row[6]),
+                     "macd_h_pct_min":float(row[7])}
+                _LIVE_PARAMS_CACHE[market] = p
+                _LIVE_PARAMS_TS[market] = now
+                return p
+    except Exception as e:
+        print(f"_get_live_params: {e}")
+    return None
 
 FEATURE_NAMES = [
     "macd_num", "adx_norm", "obv_num", "monthly_num",
