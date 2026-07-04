@@ -1445,6 +1445,70 @@ async def backtest_gridsearch(request: BacktestFullRequest):
 @app.get("/api/forecast/{code}")
 async def forecast_eps(code: str):
     return {"status": "run_locally", "message": "此功能已移至本機執行。請在 Mac 上執行 scan_local.py / simulate.py。"}
+
+# ── Sentiment ─────────────────────────────────────────────────────────────────
+GROK_API_KEY      = os.environ.get("GROK_API_KEY", "")
+_SENTIMENT_CACHE: dict = {"date": None, "data": None}
+
+def _fetch_news_text() -> str:
+    """Return a news prompt for Grok — uses direct Yahoo Finance API, no yfinance."""
+    items, seen = [], set()
+    for sym in ["SPY", "QQQ", "NVDA", "AAPL", "MSFT"]:
+        try:
+            r = requests.get(
+                f"https://query1.finance.yahoo.com/v1/finance/search?q={sym}&newsCount=4",
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=8,
+            )
+            news = r.json().get("news", [])
+            for n in news[:4]:
+                title = n.get("title", "").strip()
+                if not title or title in seen: continue
+                seen.add(title)
+                items.append(f"標題: {title}")
+        except Exception:
+            pass
+    if not items:
+        return f"今天是 {_dt.date.today().isoformat()}，請根據你的最新知識對當前全球金融市場情緒做出評估。"
+    return "\n".join(items[:10])
+
+def _analyze_with_grok(news_text: str) -> dict:
+    """Send news to Grok (xAI) via direct HTTP POST."""
+    system_prompt = (
+        "你是一位頂尖的量化交易員。請評估以下最新財經新聞，為今日市場情緒打分。"
+        "嚴格回傳標準 JSON，包含三個欄位："
+        "1. 'sentiment_score': 浮點數，範圍 -1.0（極度悲觀）到 +1.0（極度樂觀）。"
+        "2. 'key_reason': 繁體中文，一句話說明核心原因。"
+        "3. 'target_sectors': 受影響最大的產業板塊陣列，如 ['半導體', 'AI']。"
+        "不要包含任何 markdown 語法，直接輸出純 JSON 字串。"
+    )
+    resp = requests.post(
+        "https://api.x.ai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"},
+        json={"model": "grok-3-mini-beta", "temperature": 0.0, "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": f"今日新聞：\n{news_text}"},
+        ]},
+        timeout=30,
+    )
+    raw = resp.json()["choices"][0]["message"]["content"]
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"sentiment_score": 0.0, "key_reason": "解析失敗，預設中立", "target_sectors": []}
+
+def _get_or_refresh_sentiment(force: bool = False) -> dict:
+    today = _dt.date.today().isoformat()
+    if not force and _SENTIMENT_CACHE["date"] == today and _SENTIMENT_CACHE["data"]:
+        return {**_SENTIMENT_CACHE["data"], "cached": True, "fetched_at": _SENTIMENT_CACHE["data"].get("fetched_at","")}
+    news = _fetch_news_text()
+    result = _analyze_with_grok(news)
+    result["fetched_at"] = _dt.datetime.now().isoformat()
+    result["source"]     = "yahoo_finance"
+    result["cached"]     = False
+    _SENTIMENT_CACHE["date"] = today
+    _SENTIMENT_CACHE["data"] = result
+    return result
+
 @app.get("/api/sentiment")
 async def get_sentiment():
     if not GROK_API_KEY:
