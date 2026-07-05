@@ -1,0 +1,8 @@
+*.py
+requirements.txt
+__pycache__/
+*.pyc
+*.json
+!vercel.json
+*.log
+*.md
