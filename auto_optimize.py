@@ -25,10 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import simulate as sim
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-MIN_TRADES      = 15    # 最少交易次數才納入評比
+MIN_TRADES_TW   = 12    # TW 最少交易次數（股票多，容易達到）
+MIN_TRADES_US   = 6     # US 最少交易次數（watchlist 較小）
 TOP_CANDIDATES  = 5     # 每輪取前 N 個入場參數組合進行 paper sim
 DL_WORKERS      = 8     # 下載平行執行緒
-MAX_HOLD_BUFFER = 25    # 每個入場點預抓的未來天數（退出規則最長 hold_days 限制）
+MAX_HOLD_BUFFER = 25    # 每個入場點預抓的未來天數
 
 RSI_EXIT_OPTS  = [70, 73, 76, 78, 81, 84, 87]
 HOLD_DAYS_OPTS = [7, 8, 10, 12, 15]
@@ -101,7 +102,7 @@ def _collect_signals(cache: Dict, start_dt, end_dt, hold_days: int) -> List[dict
     return sigs
 
 
-def _grid_search(signals: List[dict], grid: List[dict], hold_days: int) -> List[dict]:
+def _grid_search(signals: List[dict], grid: List[dict], hold_days: int, min_n: int = 5) -> List[dict]:
     """對所有入場參數組合評分（固定持倉天數 WR）。"""
     results = []
     for p in grid:
@@ -110,7 +111,7 @@ def _grid_search(signals: List[dict], grid: List[dict], hold_days: int) -> List[
                and p["adx_lo"] <= s["adx14"] <= p["adx_hi"]
                and s["macd_h_pct"] >= p["macd_h_pct_min"]
                and p["bias_lo"] <= s["bias"] <= p["bias_hi"]]
-        if len(sub) < 8: continue
+        if len(sub) < min_n: continue
         rets = [s["return_pct"] for s in sub]
         wins = sum(1 for r in rets if r > 0)
         wr = wins / len(sub)
@@ -225,13 +226,13 @@ def _score(trades: List[dict], hold_days: int) -> Tuple[float, float, int]:
 def _entry_grid(best: Optional[dict], rnd: int, market: str) -> List[dict]:
     is_tw = market == "tw"
     if best is None or rnd == 1:
-        rsi_los  = [54,56,58,60,62]  if is_tw else [50,54,58,60,62]
-        rsi_his  = [60,62,64,66,68]  if is_tw else [63,66,68,72]
-        adx_los  = [18,20,22,24,26]  if is_tw else [14,16,18,20,22]
-        adx_his  = [28,32,36,40]     if is_tw else [26,30,34,38]
-        mh_pcts  = [60,66,70,75,80]  if is_tw else [50,60,66,70,75]
-        bias_los = [2,3,4,5]
-        bias_his = [6,7,8,9]
+        rsi_los  = [54,56,58,60,62]      if is_tw else [45,50,55,58,60,62]
+        rsi_his  = [60,62,64,66,68]      if is_tw else [60,63,66,68,72,75]
+        adx_los  = [18,20,22,24,26]      if is_tw else [12,14,16,18,20,22]
+        adx_his  = [28,32,36,40]         if is_tw else [26,30,34,38,42]
+        mh_pcts  = [60,66,70,75,80]      if is_tw else [40,50,60,66,70]
+        bias_los = [2,3,4,5]             if is_tw else [1,2,3,4,5]
+        bias_his = [6,7,8,9]             if is_tw else [6,7,8,9,10,12]
     else:
         step = max(1, 5 - rnd)
         def rng(v, s, lo, hi):
@@ -288,6 +289,8 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
     best_result: Optional[dict] = None  # 全程最佳
     best_entry:  Optional[dict] = None  # 入場參數（供下輪縮小範圍）
     best_exit = {"rsi_exit": 78, "hold_days": 10}
+    min_trades = MIN_TRADES_TW if market == "tw" else MIN_TRADES_US
+    gs_min_n   = 8            if market == "tw" else 4   # grid search 最小信號數
 
     for rnd in range(1, max_rounds + 1):
         t_rnd = time.time()
@@ -309,7 +312,7 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
             continue
 
         # C. 網格搜尋（快速排序入場參數）
-        gs_results = _grid_search(sigs, e_grid, hd_ref)
+        gs_results = _grid_search(sigs, e_grid, hd_ref, min_n=gs_min_n)
         if not gs_results:
             print("[C] ❌ 網格搜尋無結果")
             continue
@@ -338,7 +341,7 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
                 for hd in HOLD_DAYS_OPTS:
                     trades  = _apply_exits(entries, re, hd)
                     checked += 1
-                    if len(trades) < MIN_TRADES:
+                    if len(trades) < min_trades:
                         continue
                     wr, sh, n = _score(trades, hd)
                     score = sh * (wr / 0.65) * min(1.0, n / 20)
@@ -355,7 +358,11 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
         print()  # 清除 \r 行
 
         if rnd_best is None:
-            print("    ❌ 無有效組合（交易次數不足）")
+            n_found = max((len(_apply_exits(_find_entries(cache, gs_results[0]["params"], mkt_trend, start_dt, end_dt), 78, 10)),) if gs_results else (0,))
+            print(f"    ❌ 無有效組合（最多 {n_found} 筆，門檻 {min_trades} 筆）")
+            if gs_results and min_trades > 4:
+                min_trades = max(4, min_trades - 2)   # 動態放寬門檻再試
+                print(f"    ↓ 放寬交易次數門檻至 {min_trades}，下輪再試")
             continue
 
         rb = rnd_best
