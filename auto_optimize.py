@@ -42,10 +42,12 @@ def _download_cache(universe: List[str], fetch_start: str, fetch_end: str, marke
     cache: Dict[str, pd.DataFrame] = {}
 
     def _one(code: str):
-        df = sim._fetch_ohlcv(code, fetch_start, fetch_end, market=market)
+        # _fetch_ohlcv appends .TW internally — strip suffix if already present
+        clean = code.split(".")[0] if market == "tw" else code
+        df = sim._fetch_ohlcv(clean, fetch_start, fetch_end, market=market)
         if df is None or len(df) < 80:
-            return code, None
-        return code, sim._compute_bt_indicators(df)
+            return clean, None
+        return clean, sim._compute_bt_indicators(df)
 
     print(f"  下載 {len(universe)} 支股票 ({fetch_start} → {fetch_end})...")
     t0 = time.time()
@@ -271,7 +273,9 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
 
     # ── 下載資料（只做一次）────────────────────────────────────────────────
     print(f"\n[1] 下載資料")
-    universe = sim._get_universe(market)
+    raw_universe = sim._get_universe(market)
+    # Normalise: strip any .TW / .US suffix so _fetch_ohlcv doesn't double-append
+    universe = list(dict.fromkeys(c.split(".")[0] if market == "tw" else c for c in raw_universe))
     cache    = _download_cache(universe, fetch_s, fetch_e, market)
 
     # ── 大盤趨勢過濾 ─────────────────────────────────────────────────────
