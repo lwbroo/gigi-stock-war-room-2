@@ -34,6 +34,9 @@ ACTIONS: dict[str, tuple[list[str], str]] = {
     "paper_us":    (["simulate.py", "--mode", "paper",    "--market", "us", "--years", "5"], "美股 Paper 回測"),
     "both_tw":     (["simulate.py", "--mode", "both",     "--market", "tw", "--years", "5"], "台股 優化 + 回測"),
     "both_us":     (["simulate.py", "--mode", "both",     "--market", "us", "--years", "5"], "美股 優化 + 回測"),
+    "auto_tw":     (["auto_optimize.py", "--market", "tw", "--target", "72", "--rounds", "8", "--years", "5"], "台股 自動優化 (目標72%)"),
+    "auto_us":     (["auto_optimize.py", "--market", "us", "--target", "70", "--rounds", "8", "--years", "5"], "美股 自動優化 (目標70%)"),
+    "auto_both":   (["auto_optimize.py", "--market", "both", "--target", "72", "--rounds", "8", "--years", "5"], "全市場 自動優化"),
 }
 
 _state: dict = {"proc": None}  # holds the running asyncio subprocess
@@ -181,6 +184,15 @@ _HTML = """<!DOCTYPE html>
     <button class="btn b" onclick="run('opt_us')">⚙️ 美股優化</button>
     <button class="btn p" onclick="run('paper_us')">📊 美股回測</button>
     <button class="btn b" onclick="run('both_us')">🚀 美股 優化+回測</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-label">🤖 自動優化 — 持續迭代直到達標</div>
+  <div class="btn-row">
+    <button class="btn r" onclick="run('auto_tw')">🇹🇼 台股自動優化</button>
+    <button class="btn r" onclick="run('auto_us')">🇺🇸 美股自動優化</button>
+    <button class="btn r" onclick="run('auto_both')">🌏 全市場自動優化</button>
   </div>
 </div>
 
