@@ -502,13 +502,13 @@ def _xgb_features(row: dict) -> List[float]:
 def run_grid_search(all_signals: List[dict], market: str, hold_days: int = 10) -> Optional[dict]:
     is_tw    = market == "tw"
     # Tighter RSI / higher ADX / higher MACD_H to push win rate toward 85%
-    rsi_los  = [52,54,56,58]       if is_tw else [50,55,58,60]
-    rsi_his  = [60,62,64]          if is_tw else [65,68,72]
+    rsi_los  = [54,56,58,60,62]    if is_tw else [50,55,58,60]
+    rsi_his  = [62,64,66,68]       if is_tw else [65,68,72]
     adx_los  = [20,22,24,26]       if is_tw else [15,18,20,22]
     adx_his  = [32,36,40]          if is_tw else [32,36,40]
-    mh_pcts  = [60,66,70,75]       if is_tw else [50,60,66,70]
-    bias_los = [2,4]
-    bias_his = [7,8]               if is_tw else [8,10]
+    mh_pcts  = [66,70,75,80]       if is_tw else [50,60,66,70]
+    bias_los = [3,4,5]
+    bias_his = [7,8,9]             if is_tw else [8,10]
 
     grid = [
         {"rsi_lo":rsl,"rsi_hi":rsh,"adx_lo":adl,"adx_hi":adh,
@@ -669,8 +669,8 @@ def _collect_paper_trades(code: str, start_date: str, end_date: str,
             day  = j + 1
             macd_above = frow["MACD"] > frow["MACD_Sig"]
             if day >= 3:
-                if frow["RSI14"] > 70:
-                    exit_i = fi; exit_reason = "RSI>70超買"; break
+                if frow["RSI14"] > 78:
+                    exit_i = fi; exit_reason = "RSI>78超買"; break
                 # Require 2 consecutive days below MA10 to avoid false exits
                 ma10 = frow.get("MA10", float("nan"))
                 if not pd.isna(ma10) and frow["Close"] < ma10:
