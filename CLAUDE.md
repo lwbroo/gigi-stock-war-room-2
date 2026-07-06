@@ -10,10 +10,11 @@
 │                               → 寫入 scan_cache / scan_log / signal_outcomes
 ├── update_outcomes_local.py — 回填 signal_outcomes 的 5d/10d 實際報酬
 ├── market_context_local.py  — VIX + Grok AI 市場情緒 → market_context tab
-├── simulate.py               — Grid Search 參數優化 + XGBoost 訓練 + Paper Trading
-├── auto_optimize.py          — 自動迴圈調參直到達到目標勝率
+├── regression_train_local.py — OLS 回歸（12指標→10日報酬，僅台股，用 scan_log 訓練）
+├── simulate.py               — Grid Search 參數優化 + XGBoost 訓練 + Paper Trading（手動用）
+├── auto_optimize.py          — 自動迴圈調參直到達到目標勝率（含 paper trading 驗證，週排程用這個）
 ├── local_server.py           — http://localhost:8888 網頁控制台，手動觸發以上任一工具
-└── crontab（`crontab -l` 查看，8 項排程，Mon-Fri + Sunday）
+└── crontab（`crontab -l` 查看，9 項排程，Mon-Fri + Sunday）
 
 雲端 Render（api.py，很薄，只做這些事）
 ├── 讀 GSheets cache 給前端看（/api/scan/cache, /api/paper-report, /api/model/stats...）
@@ -71,11 +72,17 @@ cd frontend && npx vercel --prod --yes
 07:30 Mon-Fri  market_context_local.py            (VIX + Grok情緒)
 15:30 Mon-Fri  update_outcomes_local.py --market tw
 06:30 Tue-Sat  update_outcomes_local.py --market us
-10:00 Sunday   simulate.py --mode both --market tw --years 5  (walk-forward + paper trading)
-12:00 Sunday   simulate.py --mode both --market us --years 5
+10:00 Sunday   auto_optimize.py --market tw --target 72 --rounds 8 --years 5
+11:30 Sunday   auto_optimize.py --market us --target 70 --rounds 8 --years 5
+13:00 Sunday   regression_train_local.py          (OLS 回歸，僅台股)
 ```
 
-日誌：`/tmp/gigi_scan.log`、`/tmp/gigi_context.log`、`/tmp/gigi_outcomes.log`、`/tmp/gigi_walkforward.log`
+auto_optimize.py 每輪都包含 grid search + XGBoost 重訓 + paper trading 驗證，
+比單純 `simulate.py --mode both` 多了「沒達標就繼續調整、最多8輪」的邏輯，
+兩者都會寫 `paper_results`/`model_params`。
+
+日誌：`/tmp/gigi_scan.log`、`/tmp/gigi_context.log`、`/tmp/gigi_outcomes.log`、
+`/tmp/gigi_autooptimize.log`、`/tmp/gigi_regression.log`
 
 ## 環境變數
 
@@ -100,6 +107,7 @@ model_store     — XGBoost model（base64 + gzip pickle）
 sim_results     — Grid Search 優化歷史
 paper_results   — Paper Trading 回測結果
 market_context  — v11.0 新增：VIX + Grok情緒 每日 cache
+regression_coeffs — OLS 回歸係數（僅台股，regression_train_local.py 週更新）
 universe_tw     — 台股 top-150 市值宇宙（update_universe.py 維護）
 ```
 

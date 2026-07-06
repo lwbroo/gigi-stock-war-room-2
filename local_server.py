@@ -37,6 +37,7 @@ ACTIONS: dict[str, tuple[list[str], str]] = {
     "auto_tw":     (["auto_optimize.py", "--market", "tw", "--target", "72", "--rounds", "8", "--years", "5"], "台股 自動優化 (目標72%)"),
     "auto_us":     (["auto_optimize.py", "--market", "us", "--target", "70", "--rounds", "8", "--years", "5"], "美股 自動優化 (目標70%)"),
     "auto_both":   (["auto_optimize.py", "--market", "both", "--target", "72", "--rounds", "8", "--years", "5"], "全市場 自動優化"),
+    "regression":  (["regression_train_local.py"],                                    "OLS 回歸訓練 (僅台股)"),
 }
 
 _state: dict = {"proc": None}  # holds the running asyncio subprocess
@@ -193,6 +194,13 @@ _HTML = """<!DOCTYPE html>
     <button class="btn r" onclick="run('auto_tw')">🇹🇼 台股自動優化</button>
     <button class="btn r" onclick="run('auto_us')">🇺🇸 美股自動優化</button>
     <button class="btn r" onclick="run('auto_both')">🌏 全市場自動優化</button>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-label">📐 OLS 回歸 — 僅台股</div>
+  <div class="btn-row">
+    <button class="btn y" onclick="run('regression')">📐 訓練回歸模型</button>
   </div>
 </div>
 
