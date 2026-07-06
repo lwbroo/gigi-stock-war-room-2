@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0d1117" />
   <link rel="manifest" href="/manifest.json" />
-  <title>Gigi Stock War Room v10.0</title>
+  <title>Gigi Stock War Room v11.0</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -1455,7 +1455,7 @@
               <div className="logo">📈</div>
               <div>
                 <div className="header-title">Gigi Stock War Room</div>
-                <div className="header-sub">AI-Powered Stock Scanner · v10.0</div>
+                <div className="header-sub">AI-Powered Stock Scanner · v11.0</div>
               </div>
             </div>
             <div className="header-right">
@@ -1882,7 +1882,7 @@
             <div className="card" style={{marginTop:4}}>
               <div className="collapse-header" onClick={() => setShowGuide(v=>!v)}>
                 <span style={{fontSize:13,fontWeight:600,color:'var(--text-secondary)'}}>ℹ️ App Guide</span>
-                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v10.0</span>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v11.0</span>
                 <span style={{fontSize:11,color:'var(--text-muted)'}}>功能總覽</span>
                 <span className={`collapse-chevron ${showGuide?'open':''}`}>▶</span>
               </div>
@@ -1947,7 +1947,8 @@
                   </div>
                   <div className="feature-grid">
                   {[
-                    {icon:'💼',title:'v11.0 模擬交易 🔜',   desc:'買進訊號自動記錄虛擬買入，達出場條件自動虛擬賣出。追蹤每日損益、累計報酬、最大回撤，1-2個月壓力測試後進入真實下單。', roadmap:true},
+                    {icon:'💻',title:'v11.0 全面本機運算',  desc:'VIX/Grok情緒/訊號回填全部移到本機排程，雲端只讀 GSheets cache。順便修復了讓 signal_outcomes 一直是空的、以及可能讓近期 push 沒有真正部署成功的兩個關鍵bug。', new:true},
+                    {icon:'💼',title:'v11.1 模擬交易 🔜',   desc:'買進訊號自動記錄虛擬買入，達出場條件自動虛擬賣出。追蹤每日損益、累計報酬、最大回撤，1-2個月壓力測試後進入真實下單。', roadmap:true},
                     {icon:'🤖',title:'v10.0 XGBoost ML',    desc:'每次掃描自動記錄買進訊號，10天後追蹤實際漲跌結果，用機器學習預測每支股票的勝率（🤖XX%顯示在掃描表格）。'},
                     {icon:'💻',title:'v10.0 本機優化引擎',  desc:'simulate.py 在本機跑2年歷史Grid Search，台股最佳參數RSI 50-60/ADX 22-28，勝率從54%提升至78.6%，推送雲端即時生效。'},
                     {icon:'🔄',title:'v10.0 Walk-Forward',  desc:'每週日自動重跑6個月Grid Search，更新最佳RSI/ADX/Bias參數。市場環境變了，參數自動跟著變，永遠不過期。'},
@@ -2961,20 +2962,29 @@
             <div className="card" style={{marginTop:8}}>
               <div className="collapse-header" onClick={() => setShowChangelog(v=>!v)}>
                 <span style={{fontSize:13,fontWeight:600,color:'var(--text-secondary)'}}>📋 Changelog</span>
-                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v10.0</span>
+                <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:5,background:'rgba(129,140,248,0.15)',color:'var(--accent)',border:'1px solid rgba(129,140,248,0.25)'}}>v11.0</span>
                 <span className={`collapse-chevron ${showChangelog?'open':''}`}>▶</span>
               </div>
               {showChangelog && (
                 <div className="changelog-list">
                   {[
-                    { v:'v11.0', date:'🔜 Coming', roadmap:true, items:[
+                    { v:'v11.1', date:'🔜 Coming', roadmap:true, items:[
                       '💼 虛擬持倉自動執行 — 買進訊號觸發→自動記錄「虛擬買入」，達出場條件→自動「虛擬賣出」，完全模擬真實交易流程',
                       '📈 虛擬帳戶損益追蹤 — 每日計算持倉市值、已實現/未實現損益、最大回撤(Drawdown)',
                       '📲 Telegram 每日報告 — 推送今日持倉狀態、當日損益、累計報酬率，讓你對比真實操作',
                       '🧪 1-2個月壓力測試 — 用虛擬資金驗證策略穩定性，確認勝率和回撤符合預期後再進入真實交易',
                       '🎯 目標：確認系統月勝率 ≥65%、最大連續虧損 ≤3筆，才進入 v12.0 真實下單',
                     ]},
-                    { v:'v10.0', date:'2026-06-28', current:true, items:[
+                    { v:'v11.0', date:'2026-07-06', current:true, items:[
+                      '💻 全面轉移運算至本機 — VIX、Grok市場情緒、訊號結果回填全部從雲端搬到本機排程，雲端 API 只負責讀 GSheets cache',
+                      '🐛 修復 signal_outcomes 從未寫入的關鍵bug — 本機掃描器移植時漏掉買進訊號記錄，整個ML自我學習迴圈其實一直是空的',
+                      '🐛 修復雲端 /api/outcomes/update 呼叫不存在函式的bug — 每天執行都靜默失敗，現已改為本機執行並修正邏輯',
+                      '🐛 修復 Render 部署阻斷bug — 已停用的回測程式碼型別註記仍參照已移除的 pandas，導致近期多次 push 可能從未真正部署成功',
+                      '📲 修復本機 Telegram 通知 — .env 缺 Bot Token/Chat ID，本機排程掃描先前一直沒有真的推播出去',
+                      '🗑️ 移除 GitHub Actions 排程 — 全部改由本機 crontab 8 項排程取代（掃描/情緒/VIX/訊號回填/週度優化+紙上交易）',
+                      '📄 紙上交易排程化 — 每週日 simulate.py --mode both 自動跑 walk-forward + paper trading，結果推送到 Model tab',
+                    ]},
+                    { v:'v10.0', date:'2026-06-28', items:[
                       '🤖 XGBoost ML 勝率預測 — 每次掃描記錄買進訊號，10天後追蹤實際結果，訓練後在掃描表格顯示 🤖AI% 勝率徽章',
                       '🔄 Walk-Forward 自動調參 — 每週日重跑6個月Grid Search，最佳RSI/ADX/Bias自動更新到GSheets，掃描直接使用',
                       '📊 真實勝率追蹤 — Model tab 顯示從真實訊號結果計算的勝率（非回測），平均10日報酬',

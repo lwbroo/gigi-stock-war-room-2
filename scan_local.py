@@ -46,6 +46,10 @@ TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 SCAN_CACHE_TAB = "scan_cache"
 SCAN_LOG_TAB   = "scan_log"
+_OUTCOME_TAB   = "signal_outcomes"
+_OUTCOME_HDR   = ["signal_date", "ticker", "market", "close_signal",
+                  "rsi14", "adx14", "bias", "macd_cross", "vol_expansion", "confirmed",
+                  "close_5d", "return_5d", "close_10d", "return_10d", "win"]
 SCAN_LOG_HEADERS = [
     "scan_date", "ticker", "close",
     "macd_cross", "adx14", "obv_trend", "monthly_trend",
@@ -785,6 +789,30 @@ def _save_scan_log(sh, results: list, market: str):
         print(f"  ↑ scan_log: {len(rows)} rows appended")
 
 
+def _log_buy_signals(sh, results: list, market: str):
+    """Append today's BUY signals to signal_outcomes (feeds walk-forward + XGBoost training).
+    Outcomes (close_5d/10d, win) are filled later by update_outcomes_local.py."""
+    buys = [r for r in results if r.get("signal") == "YES"]
+    if not buys:
+        return
+    ws = _get_or_create_tab(sh, _OUTCOME_TAB, _OUTCOME_HDR)
+    today = datetime.now().strftime("%Y-%m-%d")
+    existing = {(row[0], row[1], row[2]) for row in ws.get_all_values()[1:] if len(row) >= 3}
+    rows = []
+    for r in buys:
+        key = (today, r["ticker"], market)
+        if key in existing:
+            continue
+        rows.append([today, r["ticker"], market, r.get("close", ""),
+                     r.get("rsi14", ""), r.get("adx14", ""), r.get("bias", ""),
+                     r.get("macd_cross", ""), str(r.get("vol_expansion", "")),
+                     str(r.get("confirmed_signal", "")),
+                     "", "", "", "", ""])
+    if rows:
+        ws.append_rows(rows, value_input_option="RAW")
+        print(f"  ↑ signal_outcomes: {len(rows)} buy signals logged")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_scan(market: str, notify: bool, dry_run: bool):
@@ -898,6 +926,7 @@ def run_scan(market: str, notify: bool, dry_run: bool):
     print("[7] Saving to GSheets...")
     _save_scan_cache(sh, results, market)
     _save_scan_log(sh, results, market)
+    _log_buy_signals(sh, results, market)
 
     if notify and (buy_rows or sell_rows):
         flag = "🇹🇼" if market == "tw" else "🇺🇸"

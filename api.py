@@ -1,3 +1,6 @@
+from __future__ import annotations  # v11.0 fix: dead backtest code below still type-hints
+                                     # pd.DataFrame/np.ndarray with those imports removed —
+                                     # this defers annotation evaluation so it doesn't NameError at import
 import json
 import os
 import time
@@ -49,6 +52,9 @@ _MODEL_PARAMS_HDR = ["market","rsi_lo","rsi_hi","adx_lo","adx_hi",
                      "bias_lo","bias_hi","macd_h_pct_min","win_rate","sharpe","updated"]
 _MODEL_STORE_TAB  = "model_store"
 _MODEL_STORE_HDR  = ["market","model_b64","trained_at","n_samples","accuracy"]
+_MARKET_CONTEXT_TAB = "market_context"
+_MARKET_CONTEXT_HDR = ["date","vix","vix_status","vix_score",
+                       "sentiment_score","key_reason","target_sectors","fetched_at"]
 _PAPER_RESULTS_TAB = "paper_results"
 _PAPER_RESULTS_HDR = ["run_at","market","start_date","end_date","n_tickers","total_trades",
                       "win_rate","avg_return_pct","annual_return_pct","cumulative_return_pct",
@@ -811,34 +817,7 @@ async def midnight_summary():
     return {"status": "run_locally", "message": "此功能已移至本機執行。請在 Mac 上執行 scan_local.py / simulate.py。"}
 @app.post("/api/outcomes/update")
 async def update_outcomes(market: str = "tw"):
-    """Fill 5d/10d actual returns for signals that are 15+ calendar days old."""
-    try:
-        ws = _get_or_create_tab(_OUTCOME_TAB, _OUTCOME_HDR)
-        if not ws: return {"status":"error","reason":"sheet unavailable"}
-        all_rows = ws.get_all_values()
-        if len(all_rows) < 2: return {"status":"ok","updated":0}
-        today = datetime.now(_TW_TZ).date()
-        updated = 0
-        for i, row in enumerate(all_rows[1:], 2):
-            if len(row) < 10 or row[2] != market: continue
-            if row[10]: continue  # already has close_5d
-            try:
-                sig_dt = datetime.strptime(row[0], "%Y-%m-%d").date()
-                if (today - sig_dt).days < 15: continue
-                close_sig = float(row[3]) if row[3] else None
-                if not close_sig: continue
-                c5  = _price_n_days_later(row[1], market, row[0], 5)
-                c10 = _price_n_days_later(row[1], market, row[0], 10)
-                r5  = round((c5 / close_sig - 1) * 100, 2) if c5 else ""
-                r10 = round((c10 / close_sig - 1) * 100, 2) if c10 else ""
-                win = 1 if (isinstance(r10, float) and r10 >= 3.0) else 0
-                ws.update(f"K{i}:O{i}", [[c5 or "", r5, c10 or "", r10, win]])
-                updated += 1
-            except Exception as e:
-                print(f"outcome row {i}: {e}")
-        return {"status":"ok","market":market,"updated":updated}
-    except Exception as e:
-        return {"status":"error","reason":str(e)}
+    return {"status": "run_locally", "message": "此功能已移至本機執行。請在 Mac 上執行 update_outcomes_local.py。"}
 
 # ── XGBoost model ─────────────────────────────────────────────────────────────
 
@@ -1497,17 +1476,70 @@ def _analyze_with_grok(news_text: str) -> dict:
     except Exception:
         return {"sentiment_score": 0.0, "key_reason": "解析失敗，預設中立", "target_sectors": []}
 
+def _upsert_market_context(today: str, **fields):
+    """v11.0 — merge fields into today's market_context row (creates row if missing).
+    Shared by market_context_local.py (writes vix) and cloud sentiment refresh (writes sentiment)."""
+    ws = _get_or_create_tab(_MARKET_CONTEXT_TAB, _MARKET_CONTEXT_HDR)
+    if not ws: return
+    all_rows = ws.get_all_values()
+    for i, r in enumerate(all_rows[1:], 2):
+        if r and r[0] == today:
+            row = (r + [""] * len(_MARKET_CONTEXT_HDR))[:len(_MARKET_CONTEXT_HDR)]
+            for k, v in fields.items():
+                row[_MARKET_CONTEXT_HDR.index(k)] = v
+            ws.update(f"A{i}:H{i}", [row])
+            return
+    row = [today] + [""] * (len(_MARKET_CONTEXT_HDR) - 1)
+    for k, v in fields.items():
+        row[_MARKET_CONTEXT_HDR.index(k)] = v
+    ws.append_rows([row], value_input_option="RAW")
+
+def _read_market_context_today() -> Optional[dict]:
+    """v11.0 — read today's row from market_context (populated by local cron)."""
+    try:
+        ws = _get_or_create_tab(_MARKET_CONTEXT_TAB, _MARKET_CONTEXT_HDR)
+        if not ws: return None
+        today = _dt.date.today().isoformat()
+        for r in reversed(ws.get_all_values()[1:]):
+            if r and r[0] == today:
+                return dict(zip(_MARKET_CONTEXT_HDR, r + [""] * (len(_MARKET_CONTEXT_HDR) - len(r))))
+    except Exception:
+        pass
+    return None
+
 def _get_or_refresh_sentiment(force: bool = False) -> dict:
     today = _dt.date.today().isoformat()
     if not force and _SENTIMENT_CACHE["date"] == today and _SENTIMENT_CACHE["data"]:
         return {**_SENTIMENT_CACHE["data"], "cached": True, "fetched_at": _SENTIMENT_CACHE["data"].get("fetched_at","")}
+    # v11.0 — prefer local-cron cache (market_context_local.py) over a live cloud call
+    if not force:
+        ctx = _read_market_context_today()
+        if ctx and ctx.get("sentiment_score"):
+            data = {
+                "sentiment_score": float(ctx["sentiment_score"]),
+                "key_reason": ctx.get("key_reason", ""),
+                "target_sectors": json.loads(ctx["target_sectors"]) if ctx.get("target_sectors") else [],
+                "fetched_at": ctx.get("fetched_at", ""),
+                "source": "local_cron",
+                "cached": True,
+            }
+            _SENTIMENT_CACHE["date"] = today
+            _SENTIMENT_CACHE["data"] = data
+            return data
     news = _fetch_news_text()
     result = _analyze_with_grok(news)
     result["fetched_at"] = _dt.datetime.now().isoformat()
-    result["source"]     = "yahoo_finance"
+    result["source"]     = "yahoo_finance_cloud"
     result["cached"]     = False
     _SENTIMENT_CACHE["date"] = today
     _SENTIMENT_CACHE["data"] = result
+    try:
+        _upsert_market_context(today, sentiment_score=result["sentiment_score"],
+                               key_reason=result["key_reason"],
+                               target_sectors=json.dumps(result.get("target_sectors", []), ensure_ascii=False),
+                               fetched_at=result["fetched_at"])
+    except Exception:
+        pass
     return result
 
 @app.get("/api/sentiment")
@@ -1539,6 +1571,16 @@ def _get_vix() -> float:
     today = _dt.date.today().isoformat()
     if _VIX_CACHE["date"] == today and _VIX_CACHE["vix"] is not None:
         return _VIX_CACHE["vix"]
+    # v11.0 — prefer local-cron cache (market_context_local.py) over a live cloud call
+    ctx = _read_market_context_today()
+    if ctx and ctx.get("vix"):
+        try:
+            level = float(ctx["vix"])
+            _VIX_CACHE["date"] = today
+            _VIX_CACHE["vix"]  = level
+            return level
+        except (TypeError, ValueError):
+            pass
     try:
         r = requests.get(
             "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX",
