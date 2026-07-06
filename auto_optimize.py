@@ -209,14 +209,17 @@ def _apply_exits(entries: List[dict], rsi_exit: int, hold_days: int) -> List[dic
     return trades
 
 
-def _score(trades: List[dict], hold_days: int) -> Tuple[float, float, int]:
-    if not trades: return 0.0, 0.0, 0
-    rets  = [t["return_pct"] for t in trades]
-    wr    = sum(1 for t in trades if t["won"]) / len(trades)
-    avg   = float(np.mean(rets))
-    std   = float(np.std(rets)) if len(rets) > 1 else 1.0
-    sh    = round(avg / std * (252 / hold_days) ** 0.5, 2) if std > 0 else 0.0
-    return wr, sh, len(trades)
+MIN_DISTINCT_MONTHS = 4  # guard against overfitting to one narrow time window
+
+def _score(trades: List[dict], hold_days: int) -> Tuple[float, float, int, int]:
+    if not trades: return 0.0, 0.0, 0, 0
+    rets    = [t["return_pct"] for t in trades]
+    wr      = sum(1 for t in trades if t["won"]) / len(trades)
+    avg     = float(np.mean(rets))
+    std     = float(np.std(rets)) if len(rets) > 1 else 1.0
+    sh      = round(avg / std * (252 / hold_days) ** 0.5, 2) if std > 0 else 0.0
+    n_months = len({t["entry_date"][:7] for t in trades})
+    return wr, sh, len(trades), n_months
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -343,13 +346,16 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
                     checked += 1
                     if len(trades) < min_trades:
                         continue
-                    wr, sh, n = _score(trades, hd)
-                    score = sh * (wr / 0.65) * min(1.0, n / 20)
+                    wr, sh, n, n_months = _score(trades, hd)
+                    # dampen results concentrated in very few calendar months —
+                    # a narrow filter that only ever fires during one rally is
+                    # overfitting, not a real edge, however high its raw WR/Sharpe
+                    score = sh * (wr / 0.65) * min(1.0, n / 20) * min(1.0, n_months / MIN_DISTINCT_MONTHS)
                     if rnd_best is None or score > rnd_best["score"]:
                         rnd_best = {
                             "params": {**ep, "rsi_exit": re, "hold_days": hd},
                             "trades": trades, "wr": wr, "sharpe": sh,
-                            "n": n, "score": score,
+                            "n": n, "n_months": n_months, "score": score,
                         }
                     if checked % 30 == 0:
                         bwrstr = f"{rnd_best['wr']:.1%}" if rnd_best else "—"
@@ -369,19 +375,30 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
         p  = rb["params"]
         elapsed = time.time() - t_rnd
         print(f"\n  ✅ 第 {rnd} 輪最佳  ({elapsed:.0f}s)")
-        print(f"     WR={rb['wr']:.1%}  n={rb['n']}  Sharpe={rb['sharpe']:.2f}")
+        print(f"     WR={rb['wr']:.1%}  n={rb['n']}  跨{rb['n_months']}個月  Sharpe={rb['sharpe']:.2f}")
         print(f"     入場: RSI {p['rsi_lo']}-{p['rsi_hi']} / ADX {p['adx_lo']}-{p['adx_hi']} / Bias {p['bias_lo']}-{p['bias_hi']} / MACD_H {p['macd_h_pct_min']}%")
         print(f"     出場: RSI_exit={p['rsi_exit']}  hold_days={p['hold_days']}")
 
-        # 更新全程最佳
-        if best_result is None or rb["wr"] > best_result["wr"]:
+        diverse_enough = rb["n_months"] >= MIN_DISTINCT_MONTHS
+
+        # 更新全程最佳（只在時間分散夠的結果之間比較，避免把過擬合的單月結果留下來）
+        if diverse_enough and (best_result is None or not best_result.get("n_months", 0) >= MIN_DISTINCT_MONTHS
+                                or rb["wr"] > best_result["wr"]):
+            best_result = rb
+            best_entry  = {k: v for k, v in p.items() if k not in ("rsi_exit","hold_days")}
+            best_exit   = {"rsi_exit": p["rsi_exit"], "hold_days": p["hold_days"]}
+        elif best_result is None:
+            # 還沒有任何分散夠的結果 — 先暫存這輪，總比空手好，但下面不會用它來提早停止
             best_result = rb
             best_entry  = {k: v for k, v in p.items() if k not in ("rsi_exit","hold_days")}
             best_exit   = {"rsi_exit": p["rsi_exit"], "hold_days": p["hold_days"]}
 
-        if rb["wr"] >= target_wr / 100:
-            print(f"\n  🎉 達到目標勝率 {target_wr}%！停止搜尋。")
+        if rb["wr"] >= target_wr / 100 and diverse_enough:
+            print(f"\n  🎉 達到目標勝率 {target_wr}%（且交易分散在 {rb['n_months']} 個月，非單一時段過擬合）！停止搜尋。")
             break
+        elif rb["wr"] >= target_wr / 100 and not diverse_enough:
+            print(f"\n  ⚠️  勝率達標但交易全部集中在 {rb['n_months']} 個月（<{MIN_DISTINCT_MONTHS}），")
+            print(f"      疑似對單一行情過擬合，不採用，繼續搜尋...")
         else:
             gap = target_wr - rb["wr"] * 100
             print(f"     距離目標差 {gap:.1f}%，繼續縮小搜尋範圍...")
@@ -399,8 +416,16 @@ def auto_optimize(market: str, target_wr: float, max_rounds: int, years: int):
     ep = {k: v for k, v in br["params"].items() if k not in ("rsi_exit","hold_days")}
     hd = br["params"]["hold_days"]
 
-    # 完整 paper report（列印 + 回傳計算值）
+    # 完整 paper report（列印 + 回傳計算值，僅供人工查看，不代表會採用）
     result = sim.run_paper_report(br["trades"], market, br["params"], start_date, end_date, hd)
+
+    if br.get("n_months", 0) < MIN_DISTINCT_MONTHS:
+        print(f"\n  🛑 {max_rounds} 輪內找不到分散夠（≥{MIN_DISTINCT_MONTHS}個月）的結果 —")
+        print(f"      全程最佳（WR={br['wr']:.1%}, n={br['n']}, 跨{br['n_months']}個月）疑似對單一")
+        print(f"      時段過擬合，不寫入 GSheets、不更新 live params，維持現有設定不變。")
+        print(f"      建議：延長 --years、增加股票數量，或接受較低的 --target 再試。")
+        return
+
     if result:
         passed, annual_ret, cum_ret, sharpe, max_consec = result
         sim._save_paper_result(market, br["trades"], br["params"],
