@@ -11,10 +11,11 @@
 ├── update_outcomes_local.py — 回填 signal_outcomes 的 5d/10d 實際報酬
 ├── market_context_local.py  — VIX + Grok AI 市場情緒 → market_context tab
 ├── regression_train_local.py — OLS 回歸（12指標→10日報酬，僅台股，用 scan_log 訓練）
+├── market_risk_local.py     — 大盤大跌/大漲偵測（見下方「大盤風險偵測」章節）
 ├── simulate.py               — Grid Search 參數優化 + XGBoost 訓練 + Paper Trading（手動用）
 ├── auto_optimize.py          — 自動迴圈調參直到達到目標勝率（含 paper trading 驗證，週排程用這個）
 ├── local_server.py           — http://localhost:8888 網頁控制台，手動觸發以上任一工具
-└── crontab（`crontab -l` 查看，9 項排程，Mon-Fri + Sunday）
+└── crontab（`crontab -l` 查看，11 項排程，Mon-Fri + Sunday）
 
 雲端 Render（api.py，很薄，只做這些事）
 ├── 讀 GSheets cache 給前端看（/api/scan/cache, /api/paper-report, /api/model/stats...）
@@ -72,6 +73,10 @@ cd frontend && npx vercel --prod --yes
 07:30 Mon-Fri  market_context_local.py            (VIX + Grok情緒)
 15:30 Mon-Fri  update_outcomes_local.py --market tw
 06:30 Tue-Sat  update_outcomes_local.py --market us
+14:30 Mon-Fri  market_risk_local.py --market tw    (大盤大跌/大漲偵測，見下方章節)
+05:45 Tue-Sat  market_risk_local.py --market us
+15:30 Mon-Fri  update_outcomes_local.py --market tw
+06:30 Tue-Sat  update_outcomes_local.py --market us
 10:00 Sunday   auto_optimize.py --market tw --target 72 --rounds 8 --years 5
 11:30 Sunday   auto_optimize.py --market us --target 70 --rounds 8 --years 5
 13:00 Sunday   regression_train_local.py          (OLS 回歸，僅台股)
@@ -81,8 +86,27 @@ auto_optimize.py 每輪都包含 grid search + XGBoost 重訓 + paper trading �
 比單純 `simulate.py --mode both` 多了「沒達標就繼續調整、最多8輪」的邏輯，
 兩者都會寫 `paper_results`/`model_params`。
 
-日誌：`/tmp/gigi_scan.log`、`/tmp/gigi_context.log`、`/tmp/gigi_outcomes.log`、
-`/tmp/gigi_autooptimize.log`、`/tmp/gigi_regression.log`
+日誌：`/tmp/gigi_scan.log`、`/tmp/gigi_context.log`、`/tmp/gigi_marketrisk.log`、
+`/tmp/gigi_outcomes.log`、`/tmp/gigi_autooptimize.log`、`/tmp/gigi_regression.log`
+
+## 大盤風險偵測（v11.0，2026-07-08 新增）
+
+動機：2026-07-07 台股單日重挫 -2.31%，事後想「應該要有訊號」。研究了實際的
+外資買賣超資料後發現：外資賣超與當天跌幅大多是**同一天**發生，07-03 當週最大
+單日賣超（-778億）那天指數幾乎打平，真正下跌的 07-07 賣超金額反而較小
+（-547億）— 沒有乾淨的「連續賣超→隔天崩盤」領先關係。所以這個功能刻意分成
+兩種誠實分開標示的訊號，不假裝能預測崩盤：
+
+1. **確認訊號**（可靠）— 大盤當日漲跌幅 ≥ ±2%，收盤結算後立即 Telegram 推播。
+   不是預測，是「今天已經發生了」的即時通知 — 但因為是收盤後馬上推播，
+   還是能讓你在下一個交易日開始前就知道。
+2. **風險情境**（謹慎）— TW 用外資近3日累計買賣超、US 用 VIX，各自對照自己
+   近20個交易日的均值+標準差，超出 1 個標準差才推播，用詞刻意保守
+   （"風險略升"、"僅供留意，非確認訊號"），避免製造錯誤的確定感。
+
+閾值都在 `market_risk_local.py` 檔案開頭常數區（`MOVE_THRESHOLD_PCT`、
+`FLOW_Z_THRESHOLD`），可以自行調整。`market_flow` tab 存歷史資料，風險情境
+需要累積 ≥10 個交易日才會開始計算（剛部署的頭兩週會先跳過這部分）。
 
 ## 環境變數
 
@@ -108,6 +132,7 @@ sim_results     — Grid Search 優化歷史
 paper_results   — Paper Trading 回測結果
 market_context  — v11.0 新增：VIX + Grok情緒 每日 cache
 regression_coeffs — OLS 回歸係數（僅台股，regression_train_local.py 週更新）
+market_flow     — v11.0 新增：大盤漲跌幅 + 外資流量/VIX 歷史（market_risk_local.py）
 universe_tw     — 台股 top-150 市值宇宙（update_universe.py 維護）
 ```
 
