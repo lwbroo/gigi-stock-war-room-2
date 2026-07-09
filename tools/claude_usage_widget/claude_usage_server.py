@@ -27,6 +27,7 @@ import uvicorn
 PORT = 8899
 CONFIG_PATH = Path.home() / ".gigi_claude_usage_config.json"
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+RATE_LIMIT_FILE = Path.home() / ".gigi_claude_rate_limits.json"
 
 # 每 MTok 價格 (USD)，來源：platform.claude.com/docs/en/pricing（2026-06 快照）
 # cache write 假設 5 分鐘 TTL（1.25x input），cache read 為 0.1x input
@@ -69,6 +70,16 @@ def _load_config() -> dict:
 
 def _save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+
+def _load_rate_limits() -> dict | None:
+    """讀取 claude_statusline.py 寫入的官方 rate_limits 快照（若有設定）。"""
+    if not RATE_LIMIT_FILE.exists():
+        return None
+    try:
+        return json.loads(RATE_LIMIT_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def _price_for_model(model: str) -> dict[str, float]:
@@ -218,6 +229,7 @@ def _build_usage_report() -> dict:
         "models": models,
         "config": cfg,
         "projects_dir_found": PROJECTS_DIR.exists(),
+        "official_rate_limits": _load_rate_limits(),
     }
 
 
@@ -285,16 +297,45 @@ _HTML = """<!DOCTYPE html>
   .btn{padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;background:#1f6feb;color:#fff}
   .btn:hover{opacity:.85}
   .empty-note{font-size:12px;color:#f85149;margin-bottom:14px}
+  .official-tile{background:#0d2818;border:1px solid #1f6feb33;border-radius:8px;padding:12px 14px;margin-bottom:8px}
+  .official-badge{display:inline-block;font-size:10px;font-weight:700;color:#3fb950;background:#0d2818;border:1px solid #235c3a;border-radius:4px;padding:1px 6px;margin-bottom:8px;letter-spacing:.4px}
+  .official-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px}
+  .official-row .name{font-size:12px;color:#9aa5b1}
+  .official-row .pct{font-size:15px;font-weight:700}
+  .official-reset{font-size:11px;color:#7d8590;margin-top:2px}
+  .setup-hint{background:#161b22;border:1px dashed #30363d;border-radius:8px;padding:12px 14px;margin-bottom:18px;font-size:12px;color:#9aa5b1;line-height:1.6}
+  .setup-hint code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:1px 5px;font-size:11px}
 </style>
 </head>
 <body>
 
 <h1>📊 Claude Code Usage</h1>
 <div class="sub" id="updated">載入中...</div>
+
+<div class="section" id="official-section" style="display:none">
+  <div class="official-badge">✅ 官方即時額度</div>
+  <div class="official-tile">
+    <div class="official-row"><span class="name">5 小時額度</span><span class="pct" id="off-5h-pct">–</span></div>
+    <div class="bar-bg"><div class="bar-fill" id="off-5h-bar"></div></div>
+    <div class="official-reset" id="off-5h-reset"></div>
+  </div>
+  <div class="official-tile">
+    <div class="official-row"><span class="name">7 天（本週）額度</span><span class="pct" id="off-7d-pct">–</span></div>
+    <div class="bar-bg"><div class="bar-fill" id="off-7d-bar"></div></div>
+    <div class="official-reset" id="off-7d-reset"></div>
+  </div>
+</div>
+<div class="setup-hint" id="setup-hint">
+  💡 目前看不到官方即時額度。設定 statusline 就能顯示真正的 5小時/7天額度百分比：
+  在 <code>~/.claude/settings.json</code> 加上
+  <code>"statusLine": {"type": "command", "command": "python3 .../tools/claude_usage_widget/claude_statusline.py"}</code>，
+  之後在 Claude Code 裡跑一輪對話，這個頁面重新整理就會出現。
+</div>
+
 <div class="disclaimer">
-  ⚠️ 這是本機解析 ~/.claude/projects 對話紀錄、用官方牌價反推的<b>估算</b>花費，
-  不是 Anthropic 官方帳戶的即時剩餘額度（目前沒有公開 API 可查）。
-  下面的「週預算」「5小時預算」是你自己設定的參考值，不是帳戶真正的上限。
+  ⚠️ 下面這些是本機解析 ~/.claude/projects 對話紀錄、用官方牌價反推的<b>估算</b>花費，
+  跟上面的官方額度不同，只是用來大概掌握花費趨勢。
+  「週預算」「5小時預算」是你自己設定的參考值，不是帳戶真正的上限。
 </div>
 <div id="empty-note" class="empty-note" style="display:none">
   找不到 ~/.claude/projects 目錄，可能這台機器上還沒有 Claude Code 對話紀錄。
@@ -358,6 +399,34 @@ function barClass(pct) {
 
 function fmtUSD(n) { return '$' + n.toFixed(2); }
 
+function fmtResetCountdown(epochSeconds) {
+  if (!epochSeconds) return '';
+  const ms = epochSeconds * 1000 - Date.now();
+  if (ms <= 0) return '即將重置';
+  const hours = Math.floor(ms / 3600000);
+  const mins = Math.floor((ms % 3600000) / 60000);
+  const when = new Date(epochSeconds * 1000).toLocaleString('zh-TW', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    return `${when} 重置（還有約 ${days} 天）`;
+  }
+  return `${when} 重置（還有約 ${hours}h ${mins}m）`;
+}
+
+function renderOfficialWindow(prefix, windowData) {
+  const pct = windowData && windowData.used_percentage;
+  if (pct === null || pct === undefined) {
+    document.getElementById(prefix + '-pct').textContent = '–';
+    document.getElementById(prefix + '-bar').style.width = '0%';
+    document.getElementById(prefix + '-reset').textContent = '';
+    return;
+  }
+  document.getElementById(prefix + '-pct').textContent = pct.toFixed(0) + '%';
+  document.getElementById(prefix + '-bar').style.width = Math.min(pct, 100) + '%';
+  document.getElementById(prefix + '-bar').className = 'bar-fill ' + barClass(pct);
+  document.getElementById(prefix + '-reset').textContent = fmtResetCountdown(windowData.resets_at);
+}
+
 async function refresh() {
   const res = await fetch('/api/usage');
   const d = await res.json();
@@ -365,6 +434,17 @@ async function refresh() {
   document.getElementById('updated').textContent =
     '更新於 ' + new Date(d.generated_at).toLocaleTimeString('zh-TW');
   document.getElementById('empty-note').style.display = d.projects_dir_found ? 'none' : 'block';
+
+  const official = d.official_rate_limits;
+  if (official) {
+    document.getElementById('official-section').style.display = 'block';
+    document.getElementById('setup-hint').style.display = 'none';
+    renderOfficialWindow('off-5h', official.five_hour);
+    renderOfficialWindow('off-7d', official.seven_day);
+  } else {
+    document.getElementById('official-section').style.display = 'none';
+    document.getElementById('setup-hint').style.display = 'block';
+  }
 
   document.getElementById('today-cost').textContent = fmtUSD(d.today.cost);
   document.getElementById('today-sub').textContent =
