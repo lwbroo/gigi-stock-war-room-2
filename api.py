@@ -1609,6 +1609,70 @@ async def get_vix_endpoint():
         return {"vix": None, "status": "未知", "score": 0, "error": str(e)}
 
 
+# ─── v11.1 台指期夜盤（TAIFEX 官方 OpenAPI，含一般/盤後時段）─────────────────
+_NF_CACHE: dict = {"date": None, "data": None}
+_TAIFEX_URL = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
+
+def _nf_float(v):
+    try:
+        return float(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+def _nf_pick(rows, contract):
+    """Nearest-month (highest night volume) 一般/盤後 pair for a contract."""
+    cands = [x for x in rows if x.get("Contract") == contract]
+    night = [x for x in cands if x.get("TradingSession") == "盤後"]
+    day   = [x for x in cands if x.get("TradingSession") == "一般"]
+    if not night:
+        return None
+    n = max(night, key=lambda x: _nf_float(x.get("Volume")) or 0)
+    month = n.get("ContractMonth(Week)")
+    d = next((x for x in day if x.get("ContractMonth(Week)") == month), None)
+    night_last = _nf_float(n.get("Last"))
+    day_last   = _nf_float(d.get("Last")) if d else None
+    basis = round(night_last - day_last, 1) if (night_last is not None and day_last is not None) else None
+    return {
+        "contract":      contract,
+        "month":         month,
+        "night_last":    night_last,
+        "night_change":  _nf_float(n.get("Change")),
+        "night_pct":     n.get("%"),
+        "night_open":    _nf_float(n.get("Open")),
+        "night_high":    _nf_float(n.get("High")),
+        "night_low":     _nf_float(n.get("Low")),
+        "night_volume":  _nf_float(n.get("Volume")),
+        "day_last":      day_last,
+        "basis":         basis,   # 夜盤收 - 日盤收：正=正價差(偏多暗示)
+        "session_date":  n.get("Date"),
+    }
+
+def _get_night_futures() -> dict:
+    today = _dt.date.today().isoformat()
+    if _NF_CACHE["date"] == today and _NF_CACHE["data"] is not None:
+        return _NF_CACHE["data"]
+    r = requests.get(_TAIFEX_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+    rows = r.json()
+    data = {
+        "tx":  _nf_pick(rows, "TX"),   # 大台
+        "mxf": _nf_pick(rows, "MTX"),  # 小台
+        "source": "TAIFEX OpenAPI (DailyMarketReportFut)",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if data["tx"] is None and data["mxf"] is None:
+        raise RuntimeError("TAIFEX 回傳資料中找不到 TX/MTX 盤後時段資料")
+    _NF_CACHE["date"] = today
+    _NF_CACHE["data"] = data
+    return data
+
+@app.get("/api/night-futures")
+async def get_night_futures():
+    try:
+        return _get_night_futures()
+    except Exception as e:
+        return {"tx": None, "mxf": None, "error": str(e)}
+
+
 # ─── v8.0 Claude Chat Agent ───────────────────────────────────────────────────
 import base64 as _b64
 import anthropic as _anthropic

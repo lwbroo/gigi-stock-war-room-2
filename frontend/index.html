@@ -965,6 +965,9 @@
       // v9.0 VIX state
       const [vix, setVix] = useState(null);
 
+      // v11.1 台指期夜盤 state
+      const [nightFut, setNightFut] = useState(null);
+
       // v9.0 sector filter
       const [sectorFilterOn, setSectorFilterOn] = useState(false);
 
@@ -1007,6 +1010,14 @@
         fetch(`${API_BASE}/api/vix`)
           .then(r => r.json())
           .then(d => setVix(d))
+          .catch(() => {});
+      }, []);
+
+      // v11.1 — fetch 台指期夜盤 on mount (TAIFEX TX/MTX after-hours)
+      useEffect(() => {
+        fetch(`${API_BASE}/api/night-futures`)
+          .then(r => r.json())
+          .then(d => { if (!d?.error) setNightFut(d); })
           .catch(() => {});
       }, []);
 
@@ -1532,6 +1543,27 @@
                       <span style={{fontSize:10,fontWeight:700,color:'var(--text-muted)'}}>VIX</span>
                       <span style={{fontSize:14,fontWeight:800,color:vColor}}>{v.toFixed(1)}</span>
                       <span style={{fontSize:11,color:vColor}}>{vix.status}</span>
+                    </div>
+                  );
+                })()}
+
+                {/* v11.1 台指期夜盤 badge (TW only) */}
+                {market === 'tw' && nightFut?.tx && (() => {
+                  const t = nightFut.tx;
+                  const chg = t.night_change ?? 0;
+                  const up = chg >= 0;
+                  const c = up ? 'var(--green)' : 'var(--red)';
+                  const bg = up ? 'rgba(52,211,153,0.1)' : 'rgba(248,113,113,0.12)';
+                  const basisTxt = t.basis == null ? '' : (t.basis >= 0 ? `正價差 +${t.basis}` : `逆價差 ${t.basis}`);
+                  const basisColor = t.basis == null ? 'var(--text-muted)' : t.basis >= 0 ? 'var(--green)' : 'var(--red)';
+                  const d = t.session_date ? `${t.session_date.slice(4,6)}/${t.session_date.slice(6,8)}` : '';
+                  return (
+                    <div style={{display:'flex',alignItems:'center',gap:8,padding:'4px 10px',borderRadius:8,background:bg,border:`1px solid ${c}40`,flexShrink:0}}
+                         title={`大台近月 ${t.month}｜夜盤 開 ${t.night_open} 高 ${t.night_high} 低 ${t.night_low}｜量 ${t.night_volume}｜日盤收 ${t.day_last}｜來源：期交所（交易日 ${t.session_date}）`}>
+                      <span style={{fontSize:10,fontWeight:700,color:'var(--text-muted)'}}>夜盤{d}</span>
+                      <span style={{fontSize:14,fontWeight:800,color:c}}>{t.night_last?.toLocaleString()}</span>
+                      <span style={{fontSize:11,color:c}}>{up ? '▲' : '▼'} {Math.abs(chg)} ({t.night_pct})</span>
+                      {basisTxt && <span style={{fontSize:10,fontWeight:700,color:basisColor}}>{basisTxt}</span>}
                     </div>
                   );
                 })()}
