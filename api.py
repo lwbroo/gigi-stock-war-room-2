@@ -1731,12 +1731,30 @@ def _compute_market_warning() -> dict:
     if prob >= 0.20:   light, advice = "紅燈", "大跌風險顯著升高：今日不加碼、不追高、持股設好停利停損"
     elif prob >= 0.10: light, advice = "黃燈", "風險略升：BUY 訊號從嚴，倉位保守"
     else:              light, advice = "綠燈", "風險正常：照既定策略運作"
+
+    # v11.4 進場評等（依五年勝率研究：路徑B多重確認=92.5%勝率、D1安全區=83.5%、紅色日81%會跌）
+    feats_last = {f: round(last[f], 3) for f in _MW_FEATS}
+    green_combo = (last["sp_ret"] >= 1.0 and last["vix_chg"] <= 0
+                   and last["vix"] <= 20 and last["tw_mom5"] >= 1.0)
+    if prob >= 0.20:
+        grade, grade_label, today_action = "X", "空手迴避", "今日空手：歷史此情境次日 81% 下跌，不加碼不攤平"
+    elif green_combo:
+        grade, grade_label, today_action = "A", "A級進場日", "積極進攻：美股強+VIX未升+動能足，歷史此情境次日勝率 92.5%"
+    elif prob < 0.05:
+        grade, grade_label, today_action = "B", "低風險偏多", "正常偏多：模型最安全區，歷史次日勝率 83.5%，可按策略加碼"
+    elif prob < 0.10:
+        grade, grade_label, today_action = "C", "中性偏多", "照策略運作：風險正常，只做最強訊號股"
+    else:
+        grade, grade_label, today_action = "C", "中性偏保守", "保守因應：風險略升但未達紅燈，倉位控制"
     return {
         "asof": last["date"],
         "prob": round(prob, 4),
         "light": light,
         "advice": advice,
-        "features": {f: round(last[f], 3) for f in _MW_FEATS},
+        "entry_grade": grade,
+        "entry_grade_label": grade_label,
+        "today_action": today_action,
+        "features": feats_last,
         "note": "五年邏輯斯回歸模型：預測下一台股交易日大跌(≤-1.5%)機率。基準 8.3%；≥20% 時歷史精確率 38%。僅供參考，非投資建議。",
     }
 
