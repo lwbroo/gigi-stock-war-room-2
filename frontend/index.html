@@ -901,6 +901,32 @@
       return <span className={`badge-pattern ${cls}`}>{pattern}</span>;
     }
 
+    /* ── v11.2 Sentiment sparkline (SVG, dependency-free) ── */
+    function SentiSpark({ rows, field, color, yMin, yMax, height = 120, unit = '' }) {
+      const pts = (rows || []).filter(r => r[field] != null);
+      if (pts.length < 2) return <div style={{fontSize:12,color:'var(--text-muted)',padding:'20px 0',textAlign:'center'}}>累積更多資料後顯示走勢圖</div>;
+      const W = 600, H = height, P = 6;
+      const vals = pts.map(r => r[field]);
+      const lo = yMin != null ? yMin : Math.min(...vals);
+      const hi = yMax != null ? yMax : Math.max(...vals);
+      const span = (hi - lo) || 1;
+      const x = i => P + (i / (pts.length - 1)) * (W - 2 * P);
+      const y = v => H - P - ((v - lo) / span) * (H - 2 * P);
+      const d = pts.map((r, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(r[field]).toFixed(1)}`).join(' ');
+      const zeroY = lo < 0 && hi > 0 ? y(0) : null;
+      const last = pts[pts.length - 1];
+      return (
+        <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',display:'block'}}>
+          {zeroY != null && <line x1={P} x2={W-P} y1={zeroY} y2={zeroY} stroke="var(--border)" strokeDasharray="4 3" />}
+          <path d={d} fill="none" stroke={color} strokeWidth="1.8" />
+          <circle cx={x(pts.length-1)} cy={y(last[field])} r="3.2" fill={color} />
+          <text x={W-P} y={Math.max(10, y(hi)+4)} textAnchor="end" fontSize="9" fill="var(--text-muted)">高 {hi.toFixed(2)}{unit}</text>
+          <text x={W-P} y={Math.min(H-2, y(lo)+10)} textAnchor="end" fontSize="9" fill="var(--text-muted)">低 {lo.toFixed(2)}{unit}</text>
+          <text x={P} y={12} fontSize="9" fill="var(--text-muted)">{pts[0].date} → {last.date}</text>
+        </svg>
+      );
+    }
+
     /* ── App ── */
     function App() {
       const [activeTab,      setActiveTab]      = useState('scanner');
@@ -968,6 +994,10 @@
       // v11.1 台指期夜盤 state
       const [nightFut, setNightFut] = useState(null);
 
+      // v11.2 市場情緒歷史 state
+      const [sentiHist, setSentiHist] = useState(null);
+      const [sentiHistLoading, setSentiHistLoading] = useState(false);
+
       // v9.0 sector filter
       const [sectorFilterOn, setSectorFilterOn] = useState(false);
 
@@ -1020,6 +1050,16 @@
           .then(d => { if (!d?.error) setNightFut(d); })
           .catch(() => {});
       }, []);
+
+      // v11.2 — fetch 市場情緒歷史 when 情緒 tab opens
+      useEffect(() => {
+        if (activeTab !== 'sentiment' || sentiHist) return;
+        setSentiHistLoading(true);
+        fetch(`${API_BASE}/api/sentiment/history?days=120`)
+          .then(r => r.json())
+          .then(d => { setSentiHist(d.rows || []); setSentiHistLoading(false); })
+          .catch(() => setSentiHistLoading(false));
+      }, [activeTab]);
 
       const setSavedResults = (updater) => {
         setSavedResultsRaw(prev => {
@@ -1579,6 +1619,7 @@
               { id:'portfolio', icon:'💼', label:'Portfolio' },
               { id:'backtest',  icon:'🧪', label:'Backtest'  },
               { id:'model',     icon:'🧠', label:'Model'     },
+              { id:'sentiment', icon:'💓', label:'情緒'      },
               { id:'history',   icon:'📊', label:'History'   },
               { id:'settings',  icon:'⚙️', label:'Settings'  },
             ].map(t => (
@@ -2936,6 +2977,98 @@
               </div>
             </div>
           )}
+
+          {/* ═══════════════ SENTIMENT TAB (v11.2) ═══════════════ */}
+          {activeTab === 'sentiment' && (<>
+            <div className="tab-section-title" style={{marginBottom:16}}>💓 市場情緒追蹤</div>
+
+            {/* 今日總覽 */}
+            <div className="card" style={{marginBottom:8}}>
+              {(() => {
+                const sc = sentiment?.sentiment_score;
+                const hasData = sc != null && !sentiment?.error;
+                const label = sc >= 0.5 ? '極度樂觀' : sc >= 0.2 ? '偏樂觀' : sc <= -0.5 ? '極度悲觀' : sc <= -0.2 ? '偏悲觀' : '市場中性';
+                const col = sc >= 0.2 ? 'var(--green)' : sc <= -0.2 ? 'var(--red)' : 'var(--yellow)';
+                const latest = sentiHist?.length ? sentiHist[sentiHist.length - 1] : null;
+                return (
+                  <div style={{display:'flex',gap:14,flexWrap:'wrap',alignItems:'flex-start'}}>
+                    <div style={{flex:1,minWidth:200}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',marginBottom:4}}>今日 AI 情緒（Grok）</div>
+                      {hasData ? (<>
+                        <div style={{fontSize:22,fontWeight:800,color:col}}>{label} <span style={{fontSize:14}}>{sc>=0?'+':''}{sc.toFixed(2)}</span></div>
+                        <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:4}}>{sentiment.key_reason}</div>
+                        {sentiment.target_sectors?.length>0 && (
+                          <div style={{display:'flex',gap:4,marginTop:6,flexWrap:'wrap'}}>
+                            {sentiment.target_sectors.map(s=>(<span key={s} style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'var(--bg-2)',color:'var(--text-muted)'}}>{s}</span>))}
+                          </div>)}
+                      </>) : <div style={{fontSize:12,color:'var(--text-muted)'}}>{sentimentLoading?'分析中…':'今日尚無 AI 情緒資料'}</div>}
+                    </div>
+                    <div style={{minWidth:130}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',marginBottom:4}}>VIX</div>
+                      {vix?.vix != null
+                        ? <div style={{fontSize:22,fontWeight:800,color:vix.vix>25?'var(--red)':vix.vix>20?'var(--yellow)':'var(--green)'}}>{vix.vix.toFixed(1)}<span style={{fontSize:12,fontWeight:600,marginLeft:6}}>{vix.status}</span></div>
+                        : <div style={{fontSize:12,color:'var(--text-muted)'}}>—</div>}
+                      {latest?.vix != null && <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>昨日紀錄 {latest.vix}</div>}
+                    </div>
+                    <div style={{minWidth:160}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'var(--text-muted)',marginBottom:4}}>台指期夜盤（近月）</div>
+                      {nightFut?.tx ? (<>
+                        <div style={{fontSize:22,fontWeight:800,color:(nightFut.tx.night_change??0)>=0?'var(--green)':'var(--red)'}}>
+                          {nightFut.tx.night_last?.toLocaleString()}
+                          <span style={{fontSize:12,fontWeight:600,marginLeft:6}}>{(nightFut.tx.night_change??0)>=0?'▲':'▼'}{Math.abs(nightFut.tx.night_change??0)}（{nightFut.tx.night_pct}）</span>
+                        </div>
+                        <div style={{fontSize:11,marginTop:2,color:nightFut.tx.basis>=0?'var(--green)':'var(--red)'}}>
+                          {nightFut.tx.basis>=0?`正價差 +${nightFut.tx.basis}`:`逆價差 ${nightFut.tx.basis}`}（日盤收 {nightFut.tx.day_last?.toLocaleString()}）
+                        </div>
+                        <div style={{fontSize:10,color:'var(--text-muted)'}}>期交所 {nightFut.tx.session_date}</div>
+                      </>) : <div style={{fontSize:12,color:'var(--text-muted)'}}>—</div>}
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* 走勢圖 */}
+            <div className="card" style={{marginBottom:8}}>
+              <div style={{fontSize:12,fontWeight:700,color:'var(--text-secondary)',marginBottom:6}}>VIX 走勢（每日收盤紀錄）</div>
+              {sentiHistLoading ? <div style={{fontSize:12,color:'var(--text-muted)'}}>載入中…</div>
+                : <SentiSpark rows={sentiHist} field="vix" color="#f97316" />}
+            </div>
+            <div className="card" style={{marginBottom:8}}>
+              <div style={{fontSize:12,fontWeight:700,color:'var(--text-secondary)',marginBottom:6}}>AI 情緒分數走勢（-1 極悲觀 ~ +1 極樂觀）</div>
+              {sentiHistLoading ? <div style={{fontSize:12,color:'var(--text-muted)'}}>載入中…</div>
+                : <SentiSpark rows={sentiHist} field="sentiment_score" color="var(--accent)" yMin={-1} yMax={1} />}
+            </div>
+
+            {/* 歷史明細 */}
+            <div className="card">
+              <div style={{fontSize:12,fontWeight:700,color:'var(--text-secondary)',marginBottom:6}}>每日情緒明細（最近 30 筆）</div>
+              {sentiHistLoading ? <div style={{fontSize:12,color:'var(--text-muted)'}}>載入中…</div>
+              : !sentiHist?.length ? <div style={{fontSize:12,color:'var(--text-muted)'}}>尚無歷史資料（本機 market_context_local.py 每日排程會累積）</div>
+              : (
+                <div className="table-scroll">
+                  <table>
+                    <thead><tr><th>日期</th><th>VIX</th><th>VIX 狀態</th><th>情緒分數</th><th>AI 摘要</th></tr></thead>
+                    <tbody>
+                      {[...sentiHist].reverse().slice(0,30).map(r => {
+                        const sc = r.sentiment_score;
+                        const scCol = sc == null ? 'inherit' : sc >= 0.2 ? 'var(--green)' : sc <= -0.2 ? 'var(--red)' : 'var(--yellow)';
+                        return (
+                          <tr key={r.date}>
+                            <td className="td-num">{r.date}</td>
+                            <td className="td-num">{r.vix ?? '—'}</td>
+                            <td style={{fontSize:11}}>{r.vix_status || '—'}</td>
+                            <td className="td-num" style={{color:scCol,fontWeight:700}}>{sc != null ? `${sc>=0?'+':''}${sc.toFixed(2)}` : '—'}</td>
+                            <td style={{fontSize:11,color:'var(--text-secondary)'}}>{r.key_reason || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>)}
 
           {/* ═══════════════ HISTORY TAB ═══════════════ */}
           {activeTab === 'history' && (<>

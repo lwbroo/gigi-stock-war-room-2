@@ -1673,6 +1673,39 @@ async def get_night_futures():
         return {"tx": None, "mxf": None, "error": str(e)}
 
 
+# ─── v11.2 市場情緒歷史（market_context tab 每日 VIX + Grok 情緒）────────────
+_MC_HIST_CACHE: dict = {"ts": 0, "data": None}
+
+@app.get("/api/sentiment/history")
+async def get_sentiment_history(days: int = 90):
+    """回傳 market_context tab 的歷史列（最近 N 天），供前端市場情緒頁面繪圖/列表。"""
+    days = max(1, min(int(days), 365))
+    if _MC_HIST_CACHE["data"] is not None and time.time() - _MC_HIST_CACHE["ts"] < 600:
+        rows = _MC_HIST_CACHE["data"]
+        return {"rows": rows[-days:], "count": len(rows[-days:]), "cached": True}
+    try:
+        ws = _get_or_create_tab(_MARKET_CONTEXT_TAB, _MARKET_CONTEXT_HDR)
+        if not ws:
+            return {"rows": [], "count": 0, "error": "sheet_unavailable"}
+        out = []
+        for r in ws.get_all_values()[1:]:
+            if not r or not r[0]:
+                continue
+            row = dict(zip(_MARKET_CONTEXT_HDR, r + [""] * (len(_MARKET_CONTEXT_HDR) - len(r))))
+            for k in ("vix", "vix_score", "sentiment_score"):
+                try:
+                    row[k] = float(row[k]) if str(row.get(k, "")).strip() not in ("", "None") else None
+                except (TypeError, ValueError):
+                    row[k] = None
+            out.append(row)
+        out.sort(key=lambda x: x["date"])
+        _MC_HIST_CACHE["ts"] = time.time()
+        _MC_HIST_CACHE["data"] = out
+        return {"rows": out[-days:], "count": len(out[-days:])}
+    except Exception as e:
+        return {"rows": [], "count": 0, "error": str(e)}
+
+
 # ─── v8.0 Claude Chat Agent ───────────────────────────────────────────────────
 import base64 as _b64
 import anthropic as _anthropic
