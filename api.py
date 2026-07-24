@@ -1673,6 +1673,87 @@ async def get_night_futures():
         return {"tx": None, "mxf": None, "error": str(e)}
 
 
+# ─── v11.3 大盤預警燈號（五年邏輯斯回歸，盤前計算下一台股交易日大跌機率）────
+_MW_CACHE: dict = {"key": None, "data": None}
+_MW_MU = {"vix": 19.211633, "vix_chg": -0.00437, "vix_z20": -0.018941,
+          "sp_ret": 0.052501, "tw_ret": 0.096581, "tw_mom5": 0.462156, "tw_dd20": -2.535815}
+_MW_SD = {"vix": 5.29851, "vix_chg": 1.921407, "vix_z20": 1.21984,
+          "sp_ret": 1.119727, "tw_ret": 1.343405, "tw_mom5": 2.89433, "tw_dd20": 3.088271}
+_MW_W  = {"intercept": -2.949, "vix": 0.175, "vix_chg": -0.004, "vix_z20": 0.534,
+          "sp_ret": -0.773, "tw_ret": 0.092, "tw_mom5": 0.250, "tw_dd20": -0.325}
+_MW_FEATS = ["vix", "vix_chg", "vix_z20", "sp_ret", "tw_ret", "tw_mom5", "tw_dd20"]
+
+def _yahoo_daily(symbol: str, rng: str = "3mo") -> dict:
+    """Yahoo 日線 → {台北日期: close}（與模型訓練時的對齊方式一致）"""
+    r = requests.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={rng}&interval=1d",
+        headers={"User-Agent": "Mozilla/5.0"}, timeout=12,
+    )
+    d = r.json()["chart"]["result"][0]
+    tw_tz = timezone(timedelta(hours=8))
+    out = {}
+    for t, c in zip(d["timestamp"], d["indicators"]["quote"][0]["close"]):
+        if c is None:
+            continue
+        out[datetime.fromtimestamp(t, tz=tw_tz).date().isoformat()] = float(c)
+    return out
+
+def _compute_market_warning() -> dict:
+    vix = _yahoo_daily("%5EVIX"); sp = _yahoo_daily("%5EGSPC"); tw = _yahoo_daily("%5ETWII")
+    dates = sorted(set(vix) & set(sp) & set(tw))
+    if len(dates) < 30:
+        raise RuntimeError(f"共同交易日不足（{len(dates)}）")
+    rows = []
+    for i, d in enumerate(dates):
+        row = {"date": d, "vix": vix[d], "sp": sp[d], "tw": tw[d]}
+        if i > 0:
+            prev = rows[i - 1]
+            row["vix_chg"] = row["vix"] - prev["vix"]
+            row["sp_ret"] = (row["sp"] / prev["sp"] - 1) * 100
+            row["tw_ret"] = (row["tw"] / prev["tw"] - 1) * 100
+        if i >= 5:
+            row["tw_mom5"] = (row["tw"] / rows[i - 5]["tw"] - 1) * 100
+        if i >= 19:
+            win = rows[i - 19:i + 1]
+            vxs = [r["vix"] for r in win]
+            m = sum(vxs) / len(vxs)
+            var = sum((x - m) ** 2 for x in vxs) / (len(vxs) - 1)
+            row["vix_z20"] = (row["vix"] - m) / (var ** 0.5) if var > 0 else 0.0
+            row["tw_dd20"] = (row["tw"] / max(r["tw"] for r in win) - 1) * 100
+        rows.append(row)
+    last = rows[-1]
+    for f in _MW_FEATS:
+        if f not in last:
+            raise RuntimeError(f"特徵 {f} 計算失敗")
+    z = _MW_W["intercept"] + sum(_MW_W[f] * (last[f] - _MW_MU[f]) / _MW_SD[f] for f in _MW_FEATS)
+    z = max(-30, min(30, z))
+    prob = 1 / (1 + 2.718281828 ** (-z))
+    if prob >= 0.20:   light, advice = "紅燈", "大跌風險顯著升高：今日不加碼、不追高、持股設好停利停損"
+    elif prob >= 0.10: light, advice = "黃燈", "風險略升：BUY 訊號從嚴，倉位保守"
+    else:              light, advice = "綠燈", "風險正常：照既定策略運作"
+    return {
+        "asof": last["date"],
+        "prob": round(prob, 4),
+        "light": light,
+        "advice": advice,
+        "features": {f: round(last[f], 3) for f in _MW_FEATS},
+        "note": "五年邏輯斯回歸模型：預測下一台股交易日大跌(≤-1.5%)機率。基準 8.3%；≥20% 時歷史精確率 38%。僅供參考，非投資建議。",
+    }
+
+@app.get("/api/market-warning")
+async def get_market_warning():
+    key = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).strftime("%Y-%m-%d-%H")
+    if _MW_CACHE["key"] == key and _MW_CACHE["data"] is not None:
+        return _MW_CACHE["data"]
+    try:
+        data = _compute_market_warning()
+        _MW_CACHE["key"] = key
+        _MW_CACHE["data"] = data
+        return data
+    except Exception as e:
+        return {"light": None, "prob": None, "error": str(e)}
+
+
 # ─── v11.2 市場情緒歷史（market_context tab 每日 VIX + Grok 情緒）────────────
 _MC_HIST_CACHE: dict = {"ts": 0, "data": None}
 

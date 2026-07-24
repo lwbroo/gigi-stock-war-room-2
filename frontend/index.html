@@ -998,6 +998,9 @@
       const [sentiHist, setSentiHist] = useState(null);
       const [sentiHistLoading, setSentiHistLoading] = useState(false);
 
+      // v11.3 大盤預警燈號 state
+      const [mktWarn, setMktWarn] = useState(null);
+
       // v9.0 sector filter
       const [sectorFilterOn, setSectorFilterOn] = useState(false);
 
@@ -1048,6 +1051,14 @@
         fetch(`${API_BASE}/api/night-futures`)
           .then(r => r.json())
           .then(d => { if (!d?.error) setNightFut(d); })
+          .catch(() => {});
+      }, []);
+
+      // v11.3 — fetch 大盤預警燈號 on mount
+      useEffect(() => {
+        fetch(`${API_BASE}/api/market-warning`)
+          .then(r => r.json())
+          .then(d => { if (!d?.error) setMktWarn(d); })
           .catch(() => {});
       }, []);
 
@@ -1604,6 +1615,22 @@
                       <span style={{fontSize:14,fontWeight:800,color:c}}>{t.night_last?.toLocaleString()}</span>
                       <span style={{fontSize:11,color:c}}>{up ? '▲' : '▼'} {Math.abs(chg)} ({t.night_pct})</span>
                       {basisTxt && <span style={{fontSize:10,fontWeight:700,color:basisColor}}>{basisTxt}</span>}
+                    </div>
+                  );
+                })()}
+                {/* v11.3 大盤預警燈號 badge (TW only) */}
+                {market === 'tw' && mktWarn?.light && (() => {
+                  const isRed = mktWarn.light === '紅燈', isYel = mktWarn.light === '黃燈';
+                  const c = isRed ? 'var(--red)' : isYel ? 'var(--yellow)' : 'var(--green)';
+                  const bg = isRed ? 'rgba(248,113,113,0.14)' : isYel ? 'rgba(251,191,36,0.12)' : 'rgba(52,211,153,0.1)';
+                  const emoji = isRed ? '🔴' : isYel ? '🟡' : '🟢';
+                  const f = mktWarn.features || {};
+                  return (
+                    <div style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:8,background:bg,border:`1px solid ${c}40`,flexShrink:0}}
+                         title={`${mktWarn.advice}\n昨晚美股 ${f.sp_ret}%｜VIX ${f.vix}（Δ${f.vix_chg}）｜台股5日動能 ${f.tw_mom5}%｜資料日 ${mktWarn.asof}\n${mktWarn.note}`}>
+                      <span style={{fontSize:12}}>{emoji}</span>
+                      <span style={{fontSize:11,fontWeight:800,color:c}}>{mktWarn.light}</span>
+                      <span style={{fontSize:10,color:'var(--text-muted)'}}>大跌機率 {Math.round((mktWarn.prob ?? 0) * 100)}%</span>
                     </div>
                   );
                 })()}
